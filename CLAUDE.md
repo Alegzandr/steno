@@ -57,6 +57,19 @@ Do not substitute any of these without asking first.
 - No mock data, no placeholder implementations, no "TODO: implement later"
   in code you present as done. If something can't be finished, say so.
 
+## Verification platform
+
+Linux/container verification does not validate this project. The target is
+Windows/WASAPI. A green `cargo check` in a container is necessary, never
+sufficient. Any change touching `audio/capture.rs`, `cpal`, or the `windows` /
+`windows-core` dependencies must be re-verified on the Windows dev machine
+before being reported as done. State explicitly in every report which platform
+each check ran on.
+
+On Linux, cpal compiles the ALSA backend: the WASAPI backend is never built,
+and the `windows-core` resolution trap below cannot manifest. ALSA device
+enumeration proves nothing about WASAPI device naming or behaviour.
+
 ## Known dependency trap
 
 `cpal` accepts `windows` and `windows-core` in the range >=0.61,<=0.62 as two
