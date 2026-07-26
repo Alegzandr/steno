@@ -29,11 +29,19 @@ pub fn run() {
             let preferred = config.input_device();
             app.manage(config);
             app.manage(audio::Recorder::new());
+
+            // Managed before the shortcut is armed: a recording started in the
+            // next millisecond looks this up, and an unmanaged state panics.
+            let warm_up = std::sync::Arc::new(audio::capture::WarmUp::new());
+            app.manage(warm_up.clone());
+
             shortcut::register(app.handle())?;
 
             // Pay the input device's first-open cost now, off the event loop,
             // so the user's first recording starts without the driver warm-up.
-            std::thread::spawn(move || audio::capture::warm_up(preferred));
+            // A recording that lands during it waits on the gate rather than
+            // opening the same endpoint a second time.
+            std::thread::spawn(move || audio::capture::warm_up(preferred, warm_up));
 
             Ok(())
         })

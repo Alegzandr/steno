@@ -15,9 +15,10 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 
-use super::capture::{self, Capture, InputConfig};
+use super::capture::{self, Capture, InputConfig, WarmUp};
 use super::{
     events, lock, resample, wav, LEVEL_INTERVAL, MAX_DURATION, MIN_DURATION, TARGET_RATE,
+    WARM_UP_CEILING,
 };
 use crate::config::Config;
 
@@ -157,6 +158,13 @@ fn run<R: Runtime>(
     // effect on the next recording without restarting the app.
     let preferred = app.state::<Config>().input_device();
 
+    // The startup warm-up holds the same device for a few hundred milliseconds,
+    // and the shortcut is live before it even starts. Waiting here costs
+    // nothing after the first recording and never touches the shortcut handler,
+    // which returned the moment this thread was spawned.
+    let waited = app.state::<Arc<WarmUp>>().wait(WARM_UP_CEILING);
+
+    let opening = Instant::now();
     let device_errors = stop.clone();
     let capture = match capture::start(preferred.as_deref(), move |error| {
         // Unplugged device, driver gone, format changed underneath us. Folding
@@ -167,6 +175,15 @@ fn run<R: Runtime>(
         Ok(capture) => capture,
         Err(error) => return emit_error(&app, &error.to_string()),
     };
+
+    // Neither number reaches the UI: `onset_ms` starts once the device is open,
+    // so a slow open or a wait on the gate is invisible there. This is the only
+    // place the two are observable.
+    eprintln!(
+        "session: waited {} ms for the warm-up gate, opened the device in {} ms",
+        waited.as_millis(),
+        opening.elapsed().as_millis()
+    );
 
     let requested_at = Instant::now();
     let live_at = wait_until_live(&capture, requested_at);

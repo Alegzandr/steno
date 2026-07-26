@@ -43,3 +43,9 @@ pub const LEVEL_INTERVAL: Duration = Duration::from_millis(50);
 /// A sample at or above this counts as clipped. Not 1.0: converters that
 /// saturate rarely land exactly on full scale.
 pub const CLIP_THRESHOLD: f32 = 0.99;
+
+/// How long a recording waits for the startup warm-up to release the device
+/// before opening it anyway. The warm-up costs ~350 ms cold; this is a bound
+/// on a driver that hangs, not an expected wait, and push-to-talk must survive
+/// a warm-up that never finishes.
+pub const WARM_UP_CEILING: Duration = Duration::from_millis(1_000);

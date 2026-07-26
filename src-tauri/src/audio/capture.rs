@@ -5,14 +5,14 @@
 //! we only downmix to mono so the buffer stays one channel wide.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::{Duration, Instant};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SampleFormat, SizedSample, Stream, StreamConfig};
 use serde::Serialize;
 
-use super::{AudioError, CLIP_THRESHOLD, MAX_DURATION};
+use super::{lock, AudioError, CLIP_THRESHOLD, MAX_DURATION};
 
 /// What the device actually gave us.
 #[derive(Clone, Debug)]
@@ -72,12 +72,91 @@ fn describe(device: &cpal::Device) -> String {
         .unwrap_or_else(|_| device.to_string())
 }
 
+/// A one-shot gate, opened once the startup warm-up has released the device.
+///
+/// The warm-up and a push-to-talk session both open the same endpoint, and
+/// nothing else connects them: the recorder's `Slot` serialises sessions
+/// against each other, not against the warm-up, and the shortcut is armed
+/// before the warm-up thread is even spawned. Waiting on this gate from the
+/// session thread keeps the two opens apart. It is deliberately not a lock
+/// around the device: a lock would be held for the whole dictation, up to
+/// `MAX_DURATION`, and turn a harmless overlap into a two-minute block.
+pub struct WarmUp {
+    /// Fast path, so every recording after the first pays nothing.
+    open: AtomicBool,
+    latch: Mutex<bool>,
+    opened: Condvar,
+}
+
+impl Default for WarmUp {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl WarmUp {
+    pub fn new() -> Self {
+        Self {
+            open: AtomicBool::new(false),
+            latch: Mutex::new(false),
+            opened: Condvar::new(),
+        }
+    }
+
+    /// Blocks until the warm-up is done, or `ceiling` elapses. Returns how long
+    /// it waited. Timing out is not an error: WASAPI opens the endpoint in
+    /// shared mode, so a concurrent open degrades to extra latency, never to a
+    /// failure, and a stuck warm-up must not disable push-to-talk.
+    pub fn wait(&self, ceiling: Duration) -> Duration {
+        let started = Instant::now();
+
+        if self.open.load(Ordering::Acquire) {
+            return Duration::ZERO;
+        }
+
+        let (_latch, timeout) = self
+            .opened
+            .wait_timeout_while(lock(&self.latch), ceiling, |open| !*open)
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        if timeout.timed_out() {
+            eprintln!(
+                "warm-up: still holding the device after {} ms, opening anyway",
+                ceiling.as_millis()
+            );
+        }
+
+        started.elapsed()
+    }
+
+    /// Releases every waiter. Idempotent.
+    fn release(&self) {
+        *lock(&self.latch) = true;
+        self.open.store(true, Ordering::Release);
+        self.opened.notify_all();
+    }
+}
+
+/// Opens the gate however `warm_up` ends, including on a panic or an early
+/// return. A gate left shut would cost every recording the full ceiling.
+struct ReleaseOnDrop(Arc<WarmUp>);
+
+impl Drop for ReleaseOnDrop {
+    fn drop(&mut self) {
+        self.0.release();
+    }
+}
+
 /// Opens the input device once and immediately closes it, paying the driver's
-/// first-open cost (~350 ms on this machine) at startup rather than on the
+/// first-open cost (~350 ms cold on this machine) at startup rather than on the
 /// user's first recording. Silent: the measured cost and any failure go to
 /// stderr, never to the UI. Uses the same device the next recording will, so
-/// it warms the driver that matters.
-pub fn warm_up(preferred: Option<String>) {
+/// it warms the driver that matters. Opens `gate` on the way out, whatever
+/// happens, so a session waiting to record is released as soon as the device
+/// is free.
+pub fn warm_up(preferred: Option<String>, gate: Arc<WarmUp>) {
+    let _release = ReleaseOnDrop(gate);
+
     let started = Instant::now();
     match start(preferred.as_deref(), |_| {}) {
         Ok(capture) => {
