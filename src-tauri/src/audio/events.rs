@@ -39,7 +39,9 @@ pub struct RecordingComplete {
     pub sample_rate: u32,
     pub channels: u16,
     pub clipped: bool,
-    /// `released` or `max-duration`.
+    /// `released`, `max-duration`, or `device-lost` (a clip salvaged after the
+    /// input device dropped mid-recording; a `recording-error` is emitted with
+    /// it).
     pub reason: &'static str,
 }
 

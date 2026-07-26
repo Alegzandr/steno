@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
+import { DevicePicker } from "./DevicePicker";
 import { LevelMeter } from "./LevelMeter";
 import { useRecording } from "./useRecording";
 
@@ -60,9 +61,13 @@ function App() {
 
       <main className="editor-slot">
         <div id="editor" className="editor-placeholder">
+          {!recording && <DevicePicker disabled={recording} />}
+
+          {/* Notice and clip can show together: a salvaged device-lost clip
+              arrives with an error notice explaining why the mic dropped. */}
           {notice && <p className="notice">{notice}</p>}
 
-          {clip && !notice && (
+          {clip && (
             // Stands in for the transcript until Whisper arrives in phase 3.
             <dl className="clip">
               <dt>File</dt>
@@ -74,6 +79,7 @@ function App() {
                 {clip.sampleRate} Hz, {clip.channels} ch, 16-bit
                 {clip.clipped && " · clipped"}
                 {clip.reason === "max-duration" && " · hit the 120 s cap"}
+                {clip.reason === "device-lost" && " · device lost — salvaged"}
               </dd>
             </dl>
           )}

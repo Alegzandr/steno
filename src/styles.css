@@ -149,6 +149,43 @@ body {
   color: var(--text-muted);
 }
 
+/* Placeholder microphone picker. Folds into real settings in phase 5. */
+.device-picker {
+  margin: 0 0 12px;
+  padding: 0 0 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.device-picker-label {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.device-picker-select {
+  width: 100%;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-raised);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+}
+
+.device-picker-select:disabled {
+  opacity: 0.6;
+}
+
+.device-picker-note {
+  margin: 4px 0 0;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
 .clip {
   display: grid;
   grid-template-columns: auto 1fr;

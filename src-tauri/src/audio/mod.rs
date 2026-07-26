@@ -11,6 +11,10 @@ pub mod recorder;
 pub mod resample;
 pub mod wav;
 
+// Test-only: generates the committed `fixtures/pipeline-check.wav`.
+#[cfg(test)]
+mod fixture;
+
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 

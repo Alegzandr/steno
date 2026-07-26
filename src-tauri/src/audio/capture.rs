@@ -6,9 +6,11 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SampleFormat, SizedSample, Stream, StreamConfig};
+use serde::Serialize;
 
 use super::{AudioError, CLIP_THRESHOLD, MAX_DURATION};
 
@@ -18,6 +20,75 @@ pub struct InputConfig {
     pub device_name: String,
     pub sample_rate: u32,
     pub channels: u16,
+}
+
+/// One row in the microphone dropdown: the name the user picks by, and whether
+/// it is the system default.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InputDevice {
+    pub name: String,
+    pub is_default: bool,
+}
+
+/// The available input devices, with the system default flagged. Names are the
+/// only handle the UI has; a device whose description cannot be read (it was
+/// unplugged between listing and querying) falls back to its `Display` string.
+pub fn enumerate() -> Result<Vec<InputDevice>, AudioError> {
+    let host = cpal::default_host();
+    let default_name = host.default_input_device().map(|d| describe(&d));
+
+    let mut devices = Vec::new();
+    for device in host.input_devices()? {
+        let name = describe(&device);
+        let is_default = default_name.as_deref() == Some(name.as_str());
+        devices.push(InputDevice { name, is_default });
+    }
+
+    Ok(devices)
+}
+
+/// The saved device if it is still present, otherwise the system default.
+/// Matching is by the same name the dropdown shows, so a device that was
+/// unplugged since it was chosen simply is not found and we fall through.
+fn select_device(host: &cpal::Host, preferred: Option<&str>) -> Option<cpal::Device> {
+    if let Some(wanted) = preferred {
+        if let Ok(devices) = host.input_devices() {
+            if let Some(device) = devices.into_iter().find(|d| describe(d) == wanted) {
+                return Some(device);
+            }
+        }
+    }
+
+    host.default_input_device()
+}
+
+/// The device name as the user sees it, with a `Display` fallback for a device
+/// that has gone away since it was enumerated.
+fn describe(device: &cpal::Device) -> String {
+    device
+        .description()
+        .map(|d| d.name().to_owned())
+        .unwrap_or_else(|_| device.to_string())
+}
+
+/// Opens the input device once and immediately closes it, paying the driver's
+/// first-open cost (~350 ms on this machine) at startup rather than on the
+/// user's first recording. Silent: the measured cost and any failure go to
+/// stderr, never to the UI. Uses the same device the next recording will, so
+/// it warms the driver that matters.
+pub fn warm_up(preferred: Option<String>) {
+    let started = Instant::now();
+    match start(preferred.as_deref(), |_| {}) {
+        Ok(capture) => {
+            drop(capture.stream);
+            eprintln!(
+                "warm-up: opened and closed the input device in {} ms",
+                started.elapsed().as_millis()
+            );
+        }
+        Err(error) => eprintln!("warm-up: skipped, could not open the input device ({error})"),
+    }
 }
 
 /// A running capture. Dropping `stream` stops the device.
@@ -32,17 +103,19 @@ pub struct Capture {
     pub clipped: Arc<AtomicBool>,
 }
 
-/// Opens the default input device at its native configuration and starts
-/// capturing. `on_error` runs on cpal's own thread when the stream fails, for
-/// instance when the device is unplugged mid-recording.
-pub fn start<E>(on_error: E) -> Result<Capture, AudioError>
+/// Opens an input device at its native configuration and starts capturing.
+/// `preferred` is the saved device name; when it is `None`, or names a device
+/// that is not currently present, the system default is used instead — the
+/// saved name is a hint, never a hard requirement, so unplugging the chosen
+/// mic degrades to the default rather than failing. `on_error` runs on cpal's
+/// own thread when the stream fails, for instance when the device is unplugged
+/// mid-recording.
+pub fn start<E>(preferred: Option<&str>, on_error: E) -> Result<Capture, AudioError>
 where
     E: FnMut(cpal::Error) + Send + 'static,
 {
     let host = cpal::default_host();
-    let device = host
-        .default_input_device()
-        .ok_or(AudioError::NoInputDevice)?;
+    let device = select_device(&host, preferred).ok_or(AudioError::NoInputDevice)?;
 
     let supported = device.default_input_config()?;
     let sample_format = supported.sample_format();
@@ -70,10 +143,7 @@ where
     )?;
     stream.play()?;
 
-    let device_name = device
-        .description()
-        .map(|d| d.name().to_owned())
-        .unwrap_or_else(|_| device.to_string());
+    let device_name = describe(&device);
 
     Ok(Capture {
         stream,
