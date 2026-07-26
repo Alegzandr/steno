@@ -72,7 +72,7 @@ fn describe(device: &cpal::Device) -> String {
         .unwrap_or_else(|_| device.to_string())
 }
 
-/// A one-shot gate, opened once the startup warm-up has released the device.
+/// A gate, opened once a warm-up has released the device.
 ///
 /// The warm-up and a push-to-talk session both open the same endpoint, and
 /// nothing else connects them: the recorder's `Slot` serialises sessions
@@ -129,8 +129,16 @@ impl WarmUp {
         started.elapsed()
     }
 
+    /// Shuts the gate again, ahead of a fresh warm-up. Callers must guarantee
+    /// a matching `release`, or every later recording pays the full ceiling;
+    /// `warm_up` does it through `ReleaseOnDrop`.
+    pub(super) fn arm(&self) {
+        *lock(&self.latch) = false;
+        self.open.store(false, Ordering::Release);
+    }
+
     /// Releases every waiter. Idempotent.
-    fn release(&self) {
+    pub(super) fn release(&self) {
         *lock(&self.latch) = true;
         self.open.store(true, Ordering::Release);
         self.opened.notify_all();
@@ -153,7 +161,8 @@ impl Drop for ReleaseOnDrop {
 /// stderr, never to the UI. Uses the same device the next recording will, so
 /// it warms the driver that matters. Opens `gate` on the way out, whatever
 /// happens, so a session waiting to record is released as soon as the device
-/// is free.
+/// is free. Also run when the user picks a different microphone, since the
+/// cost is paid per endpoint and none of it carries over.
 pub fn warm_up(preferred: Option<String>, gate: Arc<WarmUp>) {
     let _release = ReleaseOnDrop(gate);
 

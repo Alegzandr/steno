@@ -135,6 +135,43 @@ impl Recorder {
     }
 }
 
+/// Warms a microphone the user has just picked, off the calling thread.
+///
+/// The first open of an endpoint costs a few hundred milliseconds and is paid
+/// per endpoint, not once per process: nothing the startup warm-up did carries
+/// over to a different device, so without this the first recording after a
+/// switch pays the cold open in full.
+///
+/// Skipped while a recording is in flight, and the ordering is what makes that
+/// safe. Arming the gate first means any session starting from now on waits
+/// for us; a session that started earlier set `Slot::Recording` in `start`,
+/// before its thread was even spawned, so reading `Idle` here is enough to know
+/// the device is ours to open.
+pub fn rewarm<R: Runtime>(app: &AppHandle<R>, preferred: Option<String>) {
+    let gate = app.state::<Arc<WarmUp>>().inner().clone();
+    gate.arm();
+
+    if app.state::<Recorder>().state() != RecordingState::Idle {
+        // The running session owns the device. It is already past the gate, so
+        // releasing immediately costs it nothing.
+        gate.release();
+        return;
+    }
+
+    let spawned = {
+        let gate = gate.clone();
+        thread::Builder::new()
+            .name("steno-warm-up".to_owned())
+            .spawn(move || capture::warm_up(preferred, gate))
+    };
+
+    // `warm_up` opens the gate through its own guard, but it never ran.
+    if let Err(error) = spawned {
+        eprintln!("warm-up: could not spawn the warm-up thread ({error})");
+        gate.release();
+    }
+}
+
 /// Returns the recorder to `Idle` however the session thread ends, including
 /// on a panic. A stuck `Recording` would leave the shortcut dead for the rest
 /// of the session.

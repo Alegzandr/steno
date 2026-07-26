@@ -1,7 +1,7 @@
 use tauri::{AppHandle, Runtime, State};
 
 use crate::audio::capture::{self, InputDevice};
-use crate::audio::{Recorder, RecordingState};
+use crate::audio::{recorder, Recorder, RecordingState};
 use crate::config::Config;
 
 /// The global shortcut is the real trigger; this exists so a recording can be
@@ -46,7 +46,16 @@ pub fn input_device(config: State<'_, Config>) -> Option<String> {
 
 /// Persists the chosen device. `None` clears the override back to the system
 /// default. Takes effect on the next recording, not the current one.
+///
+/// The new endpoint is cold — the startup warm-up only ever warmed the old one
+/// — so it is warmed here, on its own thread. Returns without waiting for it.
 #[tauri::command]
-pub fn set_input_device(config: State<'_, Config>, name: Option<String>) -> Result<(), String> {
-    config.set_input_device(name)
+pub fn set_input_device<R: Runtime>(
+    app: AppHandle<R>,
+    config: State<'_, Config>,
+    name: Option<String>,
+) -> Result<(), String> {
+    config.set_input_device(name.clone())?;
+    recorder::rewarm(&app, name);
+    Ok(())
 }
