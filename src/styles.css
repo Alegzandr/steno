@@ -1,0 +1,73 @@
+:root {
+  --bg: #16161a;
+  --bg-raised: #1d1d22;
+  --border: #2a2a31;
+  --text: #e6e6ea;
+  --text-muted: #7c7c88;
+
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  overflow: hidden;
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.titlebar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex: 0 0 32px;
+  padding: 0 12px;
+  background: var(--bg-raised);
+  border-bottom: 1px solid var(--border);
+  user-select: none;
+  cursor: default;
+}
+
+.titlebar-name {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.titlebar-shortcut {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.editor-slot {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 12px;
+}
+
+/* Replaced by the CodeMirror instance in a later phase. */
+.editor-placeholder {
+  height: 100%;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+}
