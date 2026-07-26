@@ -2,16 +2,10 @@ use tauri::{AppHandle, Manager, Runtime, WebviewWindow};
 
 pub const MAIN: &str = "main";
 
-/// Show the mini editor if it is hidden, hide it otherwise.
-pub fn toggle<R: Runtime>(app: &AppHandle<R>) {
-    let Some(window) = app.get_webview_window(MAIN) else {
-        return;
-    };
-
-    if window.is_visible().unwrap_or(false) {
+/// Take the mini editor off screen.
+pub fn hide<R: Runtime>(app: &AppHandle<R>) {
+    if let Some(window) = app.get_webview_window(MAIN) {
         let _ = window.hide();
-    } else {
-        show_without_stealing_focus(&window);
     }
 }
 

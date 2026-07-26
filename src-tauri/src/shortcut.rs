@@ -1,26 +1,48 @@
-use tauri::{AppHandle, Runtime};
+use tauri::{AppHandle, Manager, Runtime};
 use tauri_plugin_global_shortcut::{
     Code, Error, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState,
 };
 
+use crate::audio::Recorder;
 use crate::window;
 
 /// Cmd+Shift+D on macOS, Ctrl+Shift+D everywhere else.
-fn toggle_shortcut() -> Shortcut {
+fn primary() -> Modifiers {
     #[cfg(target_os = "macos")]
-    let primary = Modifiers::SUPER;
+    return Modifiers::SUPER;
     #[cfg(not(target_os = "macos"))]
-    let primary = Modifiers::CONTROL;
-
-    Shortcut::new(Some(primary | Modifiers::SHIFT), Code::KeyD)
+    return Modifiers::CONTROL;
 }
 
-pub fn register_toggle<R: Runtime>(app: &AppHandle<R>) -> Result<(), Error> {
+/// Push-to-talk: hold to record, release to transcribe.
+fn talk_shortcut() -> Shortcut {
+    Shortcut::new(Some(primary() | Modifiers::SHIFT), Code::KeyD)
+}
+
+/// Temporary. Nothing else hides the window until Cmd/Ctrl+Enter arrives with
+/// the editor, and the mini editor otherwise stays on screen for good.
+fn hide_shortcut() -> Shortcut {
+    Shortcut::new(Some(primary() | Modifiers::SHIFT), Code::KeyH)
+}
+
+pub fn register<R: Runtime>(app: &AppHandle<R>) -> Result<(), Error> {
     app.global_shortcut()
-        .on_shortcut(toggle_shortcut(), |app, _shortcut, event| {
-            // Phase 2 turns this into push-to-talk by also handling Released.
+        .on_shortcut(talk_shortcut(), |app, _shortcut, event| match event.state {
+            ShortcutState::Pressed => {
+                // Both are cheap and non-blocking: this runs on the event loop
+                // thread. Opening the device happens on the session thread.
+                if let Some(window) = app.get_webview_window(window::MAIN) {
+                    window::show_without_stealing_focus(&window);
+                }
+                app.state::<Recorder>().start(app);
+            }
+            ShortcutState::Released => app.state::<Recorder>().stop(),
+        })?;
+
+    app.global_shortcut()
+        .on_shortcut(hide_shortcut(), |app, _shortcut, event| {
             if event.state == ShortcutState::Pressed {
-                window::toggle(app);
+                window::hide(app);
             }
         })
 }

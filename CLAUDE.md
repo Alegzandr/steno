@@ -56,3 +56,18 @@ Do not substitute any of these without asking first.
   (audio, transcribe, format, history).
 - No mock data, no placeholder implementations, no "TODO: implement later"
   in code you present as done. If something can't be finished, say so.
+
+## Known dependency trap
+
+`cpal` accepts `windows` and `windows-core` in the range >=0.61,<=0.62 as two
+independent ranges. Tauri pins `windows` to 0.61, nothing constrains
+`windows-core`, so Cargo resolves 0.62 and the WASAPI backend fails to
+compile. `windows-core` is pinned to 0.61.2 in Cargo.toml and Cargo.lock.
+Never run an untargeted `cargo update`. If the WASAPI backend suddenly stops
+compiling, check this first.
+
+## Agent conduct
+
+Never inject synthetic keyboard or mouse events into the live desktop
+session without asking first. Other applications are running and may be
+foreground. If a test requires real input, tell me and I will perform it.

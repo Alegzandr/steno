@@ -4,6 +4,8 @@
   --border: #2a2a31;
   --text: #e6e6ea;
   --text-muted: #7c7c88;
+  --rec: #e5484d;
+  --level: #4cc38a;
 
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
   font-size: 14px;
@@ -34,12 +36,18 @@ body {
   height: 100%;
 }
 
+/* The window is frameless and always on top: without an unmistakable tint it
+   is easy to misread a live microphone as an idle one. */
+.app-recording {
+  box-shadow: inset 0 0 0 2px var(--rec);
+}
+
 .titlebar {
   display: flex;
   align-items: center;
   justify-content: space-between;
   flex: 0 0 32px;
-  padding: 0 12px;
+  padding: 0 4px 0 12px;
   background: var(--bg-raised);
   border-bottom: 1px solid var(--border);
   user-select: none;
@@ -47,6 +55,9 @@ body {
 }
 
 .titlebar-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.04em;
@@ -54,9 +65,66 @@ body {
   color: var(--text-muted);
 }
 
+.app-recording .titlebar-name {
+  color: var(--rec);
+  font-variant-numeric: tabular-nums;
+}
+
+.rec-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--rec);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  50% {
+    opacity: 0.25;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rec-dot {
+    animation: none;
+  }
+}
+
+.titlebar-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
 .titlebar-shortcut {
   font-size: 11px;
   color: var(--text-muted);
+}
+
+.action {
+  padding: 2px 8px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.action:hover {
+  background: var(--border);
+  color: var(--text);
+}
+
+.action-cancel {
+  color: var(--rec);
+}
+
+.action-close {
+  font-size: 15px;
+  line-height: 1;
+  padding: 2px 7px 4px;
 }
 
 .editor-slot {
@@ -68,6 +136,88 @@ body {
 /* Replaced by the CodeMirror instance in a later phase. */
 .editor-placeholder {
   height: 100%;
+  padding: 12px;
   border: 1px dashed var(--border);
   border-radius: 6px;
+  overflow: auto;
+}
+
+.hint,
+.notice {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.clip {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 10px;
+  margin: 0;
+  font-size: 12px;
+}
+
+.clip dt {
+  color: var(--text-muted);
+}
+
+.clip dd {
+  margin: 0;
+}
+
+.clip-path {
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-size: 11px;
+  word-break: break-all;
+}
+
+.statusbar {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 0 0 auto;
+  padding: 8px 12px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-raised);
+}
+
+.meter-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.meter {
+  flex: 1 1 auto;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--border);
+  overflow: hidden;
+}
+
+.meter-fill {
+  height: 100%;
+  background: var(--level);
+  /* Matches the 50 ms event interval, so the bar moves continuously rather
+     than stepping. */
+  transition: width 50ms linear;
+}
+
+.clip-flag {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: var(--border);
+}
+
+.clip-flag-on {
+  color: var(--rec);
+}
+
+.device {
+  font-size: 10px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
