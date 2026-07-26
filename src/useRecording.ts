@@ -23,7 +23,7 @@ export type Clip = {
   sampleRate: number;
   channels: number;
   clipped: boolean;
-  reason: "released" | "max-duration";
+  reason: "released" | "max-duration" | "device-lost";
 };
 
 type Discarded = {
@@ -112,6 +112,12 @@ export function useRecording(): Recording {
           status: "idle",
           level: 0,
           notice: payload.message,
+          // A device-lost error is paired with a salvaged clip that arrived
+          // just before it; keep that clip so the file stays visible. Any
+          // other clip on screen is stale and the error replaces it. Order of
+          // the two events does not matter: if the clip arrives after, its own
+          // handler sets it.
+          clip: prev.clip?.reason === "device-lost" ? prev.clip : null,
         })),
       ),
     ];

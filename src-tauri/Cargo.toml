@@ -40,3 +40,10 @@ windows-core = "0.61"
 [dev-dependencies]
 # Spectrum analysis for the anti-aliasing test. Test-only, never bundled.
 rustfft = "6"
+
+# Resampling runs on the release path but also on every dev-build recording,
+# where an unoptimised sinc filter is slow enough to notice. Optimise just this
+# one crate in dev so debug builds resample at close to release speed without
+# paying to optimise everything else.
+[profile.dev.package.rubato]
+opt-level = 3

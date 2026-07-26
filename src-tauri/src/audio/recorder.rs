@@ -5,6 +5,7 @@
 //! `start` spawns, `stop` sends. Opening the device and writing the file both
 //! take tens to hundreds of milliseconds and happen on the session thread.
 
+use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
@@ -12,12 +13,13 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, Runtime};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 use super::capture::{self, Capture, InputConfig};
 use super::{
     events, lock, resample, wav, LEVEL_INTERVAL, MAX_DURATION, MIN_DURATION, TARGET_RATE,
 };
+use crate::config::Config;
 
 /// What the UI needs to know when it resyncs after a reload.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -151,8 +153,12 @@ fn run<R: Runtime>(
 ) {
     let _reset = ResetOnDrop(inner.clone());
 
+    // Read at capture time, not at start(): changing the device in the UI takes
+    // effect on the next recording without restarting the app.
+    let preferred = app.state::<Config>().input_device();
+
     let device_errors = stop.clone();
-    let capture = match capture::start(move |error| {
+    let capture = match capture::start(preferred.as_deref(), move |error| {
         // Unplugged device, driver gone, format changed underneath us. Folding
         // it into the stop channel means one exit path, so the guard is
         // released exactly once.
@@ -257,8 +263,15 @@ fn finalize<R: Runtime>(
 ) {
     let captured_ms = duration_ms(raw.len(), config.sample_rate);
 
+    // The device died mid-recording, but the samples we captured before it
+    // dropped are real dictation. Save them and still report the error.
+    if let Stop::DeviceError(message) = reason {
+        return salvage(app, &raw, config, clipped, captured_ms, &message);
+    }
+
     let reason = match reason {
-        Stop::DeviceError(message) => return emit_error(app, &message),
+        // Handled above; the compiler cannot see that.
+        Stop::DeviceError(_) => unreachable!(),
         Stop::Cancelled => return emit_discarded(app, captured_ms, "cancelled"),
         Stop::Released => "released",
         Stop::MaxDuration => "max-duration",
@@ -270,22 +283,57 @@ fn finalize<R: Runtime>(
         return emit_discarded(app, captured_ms, "too-short");
     }
 
-    let samples = match resample::to_target_rate(&raw, config.sample_rate) {
-        Ok(samples) => samples,
-        Err(error) => return emit_error(app, &error.to_string()),
-    };
+    match write_clip(&raw, config) {
+        Ok((path, samples)) => emit_complete(app, &path, samples, clipped, reason),
+        Err(error) => emit_error(app, &error.to_string()),
+    }
+}
 
-    let path = match wav::write_temp(&samples) {
-        Ok(path) => path,
-        Err(error) => return emit_error(app, &error.to_string()),
-    };
+/// Losing 100 seconds of dictation to a USB glitch is avoidable: whatever
+/// reached memory before the device dropped is written out as a normal clip,
+/// tagged `device-lost`. The error is emitted alongside it either way, so the
+/// UI leaves the recording state and the user knows the mic went. A clip too
+/// short to be a dictation is dropped — only the error goes out.
+fn salvage<R: Runtime>(
+    app: &AppHandle<R>,
+    raw: &[f32],
+    config: &InputConfig,
+    clipped: bool,
+    captured_ms: u64,
+    message: &str,
+) {
+    if captured_ms >= MIN_DURATION.as_millis() as u64 {
+        // Best effort: if the salvage write itself fails, the error below is
+        // still the user's signal.
+        if let Ok((path, samples)) = write_clip(raw, config) {
+            emit_complete(app, &path, samples, clipped, "device-lost");
+        }
+    }
 
+    emit_error(app, message);
+}
+
+/// Resamples the raw capture to 16 kHz and writes the temp WAV. Returns its
+/// path and the final sample count (the file's own length).
+fn write_clip(raw: &[f32], config: &InputConfig) -> Result<(PathBuf, usize), super::AudioError> {
+    let samples = resample::to_target_rate(raw, config.sample_rate)?;
+    let len = samples.len();
+    let path = wav::write_temp(&samples)?;
+    Ok((path, len))
+}
+
+fn emit_complete<R: Runtime>(
+    app: &AppHandle<R>,
+    path: &Path,
+    sample_len: usize,
+    clipped: bool,
+    reason: &'static str,
+) {
     let _ = app.emit(
         events::RECORDING_COMPLETE,
         events::RecordingComplete {
             path: path.to_string_lossy().into_owned(),
-            // The file's own length, not a wall-clock reading.
-            duration_ms: duration_ms(samples.len(), TARGET_RATE),
+            duration_ms: duration_ms(sample_len, TARGET_RATE),
             sample_rate: TARGET_RATE,
             channels: 1,
             clipped,
