@@ -121,6 +121,19 @@ pub fn on_show<R: Runtime>(app: &AppHandle<R>) {
 /// dropped immediately — nothing here wants to *use* the model, only to have it
 /// resident — which leaves the slot Ready and evictable.
 fn warm_in_order<R: Runtime>(app: &AppHandle<R>) {
+    // Nothing to warm when the GPU runtime is not there. Whisper would refuse
+    // anyway — `Engine::load` asks the same question — but llama.cpp would not:
+    // ggml simply skips the CUDA module it cannot open and loads nine gigabytes
+    // onto the CPU instead, which is minutes of work for a cleanup the user is
+    // about to be told cannot run. Both are reported failed so the status bar
+    // agrees with the panel the window is showing.
+    if let Some(blocker) = crate::gpu::blocker() {
+        for resource in ["whisper", "llm"] {
+            emit(app, resource, ResidentState::Failed, Some(blocker.one_line()));
+        }
+        return;
+    }
+
     let whisper = app.state::<Whisper>().inner().clone();
     if let Some(loader) = whisper_loader(app) {
         // The error is already reported to the UI by the loader itself, and a

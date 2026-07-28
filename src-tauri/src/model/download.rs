@@ -72,7 +72,7 @@ pub struct Downloads {
 
 impl Downloads {
     /// Claims the single download slot.
-    fn begin(&self) -> Result<Arc<AtomicBool>, String> {
+    pub(crate) fn begin(&self) -> Result<Arc<AtomicBool>, String> {
         let mut slot = lock(&self.cancel);
         if slot.is_some() {
             return Err("a download is already running".to_owned());
@@ -99,7 +99,7 @@ impl Downloads {
 }
 
 /// Frees the slot however the download ends, including on an early return.
-struct EndOnDrop<'a>(&'a Downloads);
+pub(crate) struct EndOnDrop<'a>(pub(crate) &'a Downloads);
 
 impl Drop for EndOnDrop<'_> {
     fn drop(&mut self) {
@@ -243,17 +243,18 @@ async fn fetch(
         request = request.header(reqwest::header::RANGE, format!("bytes={have}-"));
     }
 
+    // Named from the URL rather than hard-coded: models come from Hugging Face,
+    // the GPU runtime comes from NVIDIA, and a message that blames the wrong
+    // host sends the user to check the wrong thing.
+    let host = host_of(spec.url);
+
     let response = request
         .send()
         .await
-        .map_err(|error| format!("could not reach huggingface.co ({error})"))?;
+        .map_err(|error| format!("could not reach {host} ({error})"))?;
 
     if !response.status().is_success() {
-        return Err(format!(
-            "huggingface.co answered {} for {}",
-            response.status(),
-            spec.id
-        ));
+        return Err(format!("{host} answered {} for {}", response.status(), spec.id));
     }
 
     // A server that ignores `Range` answers 200 with the whole file. Honouring
@@ -301,6 +302,14 @@ async fn fetch(
 
     report(measure(spec, have, have - began_at, began.elapsed(), resumed));
     Ok(have)
+}
+
+/// The host out of a URL, for a message. Falls back to the whole URL rather
+/// than to nothing: a long message beats a sentence with a hole in it.
+fn host_of(url: &str) -> &str {
+    url.split_once("://")
+        .map(|(_, rest)| rest.split('/').next().unwrap_or(rest))
+        .unwrap_or(url)
 }
 
 /// Turns raw counters into the shape the UI draws. Rate is measured over this
@@ -377,6 +386,29 @@ async fn verify(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_host_is_named_from_the_url() {
+        assert_eq!(host_of("https://huggingface.co/x/y"), "huggingface.co");
+        assert_eq!(
+            host_of(crate::gpu::runtime::ARCHIVE.url),
+            "developer.download.nvidia.com"
+        );
+        // No scheme, no host: say the whole thing rather than an empty string.
+        assert_eq!(host_of("not a url"), "not a url");
+    }
+
+    #[test]
+    fn the_partial_file_sits_beside_the_finished_one() {
+        let partial = partial_path(Path::new(r"C:\models\ggml-large-v3.bin"));
+        assert_eq!(partial.file_name().unwrap(), "ggml-large-v3.bin.part");
+        assert_eq!(partial.parent(), Some(Path::new(r"C:\models")));
+    }
 }
 
 fn hash(path: &Path) -> Result<String, String> {

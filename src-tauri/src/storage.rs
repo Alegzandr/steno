@@ -77,6 +77,31 @@ pub fn advisory(media: Media) -> Option<String> {
     }
 }
 
+/// Free space on the volume holding `path`, in bytes.
+///
+/// `None` means the question could not be answered, which is not the same as
+/// zero and must never be shown as "no space": a download refused on the
+/// strength of a failed query is worse than one that runs out of disk and says
+/// so. The nearest existing ancestor is asked, because the directory a download
+/// is about to create does not exist yet.
+pub fn free_bytes(path: &Path) -> Option<u64> {
+    let mut existing = path;
+    while !existing.exists() {
+        existing = existing.parent()?;
+    }
+    free_on_volume(existing)
+}
+
+#[cfg(target_os = "windows")]
+fn free_on_volume(directory: &Path) -> Option<u64> {
+    windows_impl::free_bytes(directory)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn free_on_volume(_directory: &Path) -> Option<u64> {
+    None
+}
+
 #[cfg(target_os = "windows")]
 pub fn media_type(path: &Path) -> Media {
     windows_impl::seek_penalty(path)
@@ -93,18 +118,45 @@ pub fn media_type(_path: &Path) -> Media {
 #[cfg(target_os = "windows")]
 mod windows_impl {
     use super::Media;
+    use std::os::windows::ffi::OsStrExt;
     use std::path::Path;
 
     use windows::core::PCWSTR;
     use windows::Win32::Foundation::{CloseHandle, HANDLE};
     use windows::Win32::Storage::FileSystem::{
-        CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+        CreateFileW, GetDiskFreeSpaceExW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        OPEN_EXISTING,
     };
     use windows::Win32::System::Ioctl::{
         DEVICE_SEEK_PENALTY_DESCRIPTOR, IOCTL_STORAGE_QUERY_PROPERTY, PropertyStandardQuery,
         STORAGE_PROPERTY_QUERY, StorageDeviceSeekPenaltyProperty,
     };
     use windows::Win32::System::IO::DeviceIoControl;
+
+    /// The caller's own free space, not the volume's.
+    ///
+    /// Under a disk quota those differ, and the one that decides whether a
+    /// 391 MB download completes is the caller's.
+    pub fn free_bytes(directory: &Path) -> Option<u64> {
+        let wide: Vec<u16> = directory
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+
+        let mut available = 0u64;
+        // SAFETY: the buffer is NUL-terminated and outlives the call.
+        let ok = unsafe {
+            GetDiskFreeSpaceExW(
+                PCWSTR(wide.as_ptr()),
+                Some(&mut available),
+                None,
+                None,
+            )
+        };
+
+        ok.ok().map(|()| available)
+    }
 
     pub fn seek_penalty(path: &Path) -> Media {
         let Some(volume) = device_path(path) else {

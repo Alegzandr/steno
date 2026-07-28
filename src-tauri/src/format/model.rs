@@ -186,12 +186,13 @@ pub struct Availability {
 }
 
 pub fn availability(path: &Path) -> Availability {
-    // cuBLAS first, because it outranks the backend modules: it is a delay-load
-    // import of the executable itself, so a missing one takes whisper down as
-    // well, and left unasked it would surface from inside the first cleanup
-    // instead of from the startup check.
-    let backend_problem =
-        backends::cublas_missing().or_else(|| backends::diagnose(backends::locate().as_ref()));
+    // The GPU runtime first, because it outranks the backend modules: a missing
+    // cuBLAS takes dictation down as well, so reporting a ggml module problem
+    // over it would name the smaller of two faults. Same answer the rest of the
+    // process gets — `crate::gpu` computes it once.
+    let backend_problem = crate::gpu::blocker()
+        .map(|blocker| blocker.one_line())
+        .or_else(|| backends::diagnose(backends::locate().as_ref()));
 
     Availability {
         reachable: backend_problem.is_none(),

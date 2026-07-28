@@ -9,6 +9,7 @@ mod window;
 // than a second copy of it that can quietly drift.
 pub mod config;
 pub mod format;
+pub mod gpu;
 pub mod model;
 pub mod resident;
 pub mod storage;
@@ -39,6 +40,9 @@ pub fn run() {
             commands::model::download_formatter_model,
             commands::transcribe::transcribe_file,
             commands::transcribe::residency,
+            commands::gpu::gpu_blocker,
+            commands::gpu::cublas_status,
+            commands::gpu::install_cublas,
             commands::format::llm_availability,
             commands::format::clean_up,
             commands::format::cancel_cleanup,
@@ -81,6 +85,20 @@ pub fn run() {
                 spec.id,
                 model::backend_name()
             );
+
+            // Before the probe, not after: the probe resolves the DLL exactly
+            // as the delay-load thunk will, so it has to be asking against the
+            // final search order. This is also what lets a cuBLAS download land
+            // in a directory the user can write to and still be found.
+            if let Err(error) = gpu::use_runtime_dir(&gpu::runtime_dir(app.handle())) {
+                eprintln!("gpu: {error}");
+            }
+
+            // Settled here, before the shortcut is armed, because the answer
+            // decides whether push-to-talk records at all — and because the
+            // first thing to ask otherwise would be the shortcut handler, which
+            // runs on the event loop. It logs itself when there is a problem.
+            let _ = gpu::blocker();
 
             // The ggml backend DLLs are opened lazily, long after startup, so a
             // missing one is not a crash — it is a Steno that launches, records

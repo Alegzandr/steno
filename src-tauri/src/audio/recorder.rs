@@ -82,6 +82,16 @@ impl Recorder {
     /// Starts a recording. Ignored when one is already running or when the
     /// previous clip is still being written.
     pub fn start<R: Runtime>(&self, app: &AppHandle<R>) {
+        // A recording that can never be transcribed is worse than no recording:
+        // the user holds the key, watches the level meter, releases, and only
+        // then learns the GPU runtime is missing. Refused here rather than in
+        // the shortcut handler because the debug command lands on the same
+        // method, and one guard cannot drift from the other.
+        if let Some(blocker) = crate::gpu::blocker() {
+            eprintln!("audio: not recording — {}", blocker.message);
+            return;
+        }
+
         let mut slot = lock(&self.inner.slot);
 
         // The guard. On Windows the hotkey is registered with MOD_NOREPEAT so

@@ -151,13 +151,89 @@ A layout change is verified by renaming the build tree away and running the
 `out/backends` into one `src-tauri/runtime/`, which `tauri.conf.json` maps with
 `"runtime/*.dll": ""`.
 
-**Open question, not yet decided.** A CUDA build imports `cublas64_*.dll` at
-load time — from the executable itself, not only from `ggml-cuda.dll` — and it
-is not shipped. With the toolkit off `PATH`, measured: exit `0xC0000135` before
-`main`. Adding `cublas64_13.dll` and `cublasLt64_13.dll` alone is sufficient and
-they cost 492 MB against a 79 MB installer. `cudart` is statically linked and is
-not a problem. Ship, static-link, or detect and tell the user — undecided; do
-not pick one unilaterally.
+**cuBLAS, and why it is delay-loaded.** A CUDA build imports `cublas64_*.dll`
+from the executable itself, not only from `ggml-cuda.dll`, because whisper's
+ggml is static. Left as a load-time import that is exit `0xC0000135` before
+`main` on a machine without the toolkit — measured, with the toolkit off `PATH`.
+`build.rs` therefore emits `/DELAYLOAD:cublas64_<major>.dll` (the name is read
+from `CUDA_PATH`, because `/DELAYLOAD` silently does nothing against a name that
+matches no import) and links `delayimp`. Resolution then happens on the first
+call, which is after `main`, which is what makes a message possible. Measured
+cost with the DLLs present: none — 1495 ms load against 1504, 37.2 tok/s against
+37.1, 41/41 layers offloaded either way. `cublasLt` is imported by `cublas`, not
+by us, and follows without being named. `cudart` is statically linked. Only
+`ggml-cuda.dll` is already lazy: ggml opens it with `LoadLibrary`, gets
+`ERROR_MOD_NOT_FOUND` and falls back to the CPU, so it needs nothing.
+
+The failure is intercepted by a `LoadLibrary` probe in `crate::gpu`, **not** by
+the delay-load failure hook: the hook fires from inside the thunk, on whichever
+thread first touched cuBLAS, and declining to continue from there means raising
+a structured exception through Rust frames. `gpu::blocker()` answers once for
+the whole process and is consulted by `Engine::load`, `Recorder::start`,
+`format::model::availability` and `lifecycle::warm_in_order`. One probe, cached
+deliberately — two probes that can disagree let the UI refuse a recording that
+is already running.
+
+The 492 MB is **downloaded on first run**, not shipped and not statically
+linked, reusing `model/download.rs`. Implemented in `gpu::runtime`; the panel is
+`CublasDownload.tsx`. Five things about it are settled and measured, not open:
+
+- **Source.** NVIDIA's own redistributable index publishes versioned archives
+  with a `sha256`, which is the shape `download.rs` already consumes:
+  `libcublas-windows-x86_64-13.5.1.27-archive.zip`, 391,055,517 bytes,
+  `Accept-Ranges: bytes`, and its two DLLs are 99.97% of the archive. Nothing is
+  self-hosted. The EULA's Attachment A lists `cublas.dll, cublasLt.dll` as
+  redistributable and §2.3 permits unzipping; fetching from NVIDIA's CDN is not
+  redistribution by us at all. Ship the archive's `LICENSE` beside the DLLs.
+- **Destination.** `%APPDATA%\com.steno.app\runtime\`, not beside the
+  executable. The exe's directory is in the loader's search order for free, but
+  on an installed Steno it is under Program Files, and 512 MB written there
+  means a UAC prompt on first run. `gpu::use_runtime_dir` buys the same
+  resolution for a directory the user already owns, with `SetDllDirectory`,
+  called in `setup` **before** the probe — the probe resolves the same way the
+  thunk will, so it has to be asking against the final search order. Not
+  `SetDefaultDllDirectories`: that drops `PATH` from the search and would break
+  every machine that has the toolkit installed. `cublasLt64_13.dll` is pulled in
+  by `cublas64_13.dll` and resolves through the same directory, so it has to be
+  staged too.
+- **No restart.** `gpu::blocker` is cached but not frozen: `gpu::recheck` is the
+  one place the answer may change and it belongs to the download's completion.
+  Measured by `examples/gpu_recovery.rs`, run with CUDA off `PATH`: blocked on
+  `cublas64_13.dll`, DLLs staged into an empty directory while the process ran,
+  recheck clear in 2605 ms, then 27.9 s of audio transcribed on CUDA0 in 2875 ms
+  and a cleanup at 41/41 layers offloaded — same process, no restart. The
+  control, with CUDA on `PATH`, refuses to run rather than reporting a pass.
+- **Two members, not the archive.** `zip`'s `by_name` seeks through the central
+  directory, so only `cublasLt64_13.dll` (460,301,424), `cublas64_13.dll`
+  (51,870,320) and `LICENSE` (68,070) are inflated; `nvblas`, the headers and
+  the import libraries are never touched. Deflate is the only method in the
+  archive — read out of its central directory, not assumed. Transient peak 903
+  MB, which is what `storage::free_bytes` is checked against before starting;
+  the zip is deleted once the DLLs are in place, and kept if extraction fails so
+  a retry does not re-fetch 391 MB. Members are written under a `.part` name and
+  renamed, `cublasLt` first and `cublas64` last, so the file the probe looks for
+  never appears before the file it depends on.
+- **The driver, not a version table.** cuBLAS 13 needs an r580+ driver, and
+  `gpu::driver` asks NVML rather than mapping driver numbers:
+  `nvmlSystemGetCudaDriverVersion_v2` reports the highest CUDA version the
+  installed driver supports, which already accounts for minor-version
+  compatibility. `nvml.dll` ships with the display driver, not the toolkit —
+  it is in `System32` on a machine with no toolkit on `PATH` — and is opened
+  with `LoadLibrary` so a machine with no NVIDIA driver gets "cannot tell"
+  rather than a process that will not start. **Unknown never blocks the
+  download**: refusing to fetch cuBLAS because a query failed turns a diagnostic
+  into an outage.
+
+**Considered and declined: making whisper's ggml dynamic too.** It would collapse
+the two registries into one, move the cuBLAS import out of `steno.exe` into
+`ggml-cuda.dll` where it is already lazy, and remove ~50 MB of duplicated CUDA
+kernels (a 60 MB executable beside a 51 MB `ggml-cuda.dll`). It was not done
+because `whisper-rs-sys` exposes no such option, so it would have to be vendored
+and its build patched, and because the two upstreams vendor ggml independently:
+sharing one `ggml-base.dll` makes their versions a matching requirement on every
+bump, whose failure is not a link error but a silent ABI mismatch. Two
+documented registries beat one mismatched registry. Do not revisit unless both
+crates track the same ggml.
 
 ## Vendored whisper-rs patch
 

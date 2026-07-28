@@ -74,6 +74,13 @@ reqwest = { version = "0.13", default-features = false, features = [
 ] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 sha2 = "0.10"
+# Two members out of NVIDIA's 391 MB cuBLAS archive, and nothing else: `by_name`
+# seeks through the central directory rather than streaming the whole file, so
+# `nvblas64_13.dll`, the headers and the import libraries are never inflated.
+# Deflate is the only method the archive uses — read out of its central
+# directory, not assumed — so every other codec the crate offers would be weight
+# for nothing.
+zip = { version = "8", default-features = false, features = ["deflate"] }
 # Ctrl+Enter copies the buffer. The webview's own clipboard API needs document
 # focus, which is the one thing this window deliberately never takes.
 tauri-plugin-clipboard-manager = "2"

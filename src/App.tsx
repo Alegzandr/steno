@@ -9,6 +9,8 @@ import { FormatBar } from "./FormatBar";
 import { LevelMeter } from "./LevelMeter";
 import { ModelDownload } from "./ModelDownload";
 import { useCleanup } from "./useCleanup";
+import { useGpu } from "./useGpu";
+import { CublasDownload } from "./CublasDownload";
 import { useModel } from "./useModel";
 import { useRecording } from "./useRecording";
 import { useResidency, type ResidentState } from "./useResidency";
@@ -52,6 +54,7 @@ function App() {
   const transcription = useTranscription();
   const residency = useResidency();
   const model = useModel();
+  const gpu = useGpu();
 
   const editor = useRef<EditorHandle>(null);
   const cleanup = useCleanup(editor);
@@ -232,7 +235,16 @@ function App() {
         </span>
       </header>
 
-      {needsModel ? (
+      {/* First, and instead of everything else. Nothing below works without
+          the GPU runtime — the shortcut will not even start a recording — so
+          offering the editor would be offering a buffer that can never be
+          filled. It outranks the model download for the same reason: there
+          would be no point downloading nine gigabytes to run on it. */}
+      {gpu.blocker ? (
+        <main className="editor-slot">
+          <CublasDownload gpu={gpu} />
+        </main>
+      ) : needsModel ? (
         <main className="editor-slot">
           <ModelDownload model={model} />
         </main>

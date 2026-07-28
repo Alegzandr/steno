@@ -70,6 +70,16 @@ impl Engine {
     /// video memory — so it belongs on a warm-up thread, never on the event
     /// loop.
     pub fn load(path: &Path, model_id: &str) -> Result<Self, String> {
+        // Before anything touches whisper.cpp. This is the chokepoint rather
+        // than the call sites because it is the *only* way a Whisper context
+        // gets built, and a context is what calls into cuBLAS: with the DLL
+        // absent, going one line further raises a structured exception from
+        // inside a delay-load thunk, which is not a `Result` and not catchable
+        // anywhere useful. See `crate::gpu`.
+        if let Some(blocker) = crate::gpu::blocker() {
+            return Err(blocker.one_line());
+        }
+
         if !path.exists() {
             return Err(format!("the model file is missing: {}", path.display()));
         }
