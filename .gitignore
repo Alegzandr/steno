@@ -22,3 +22,7 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Regenerated on demand by tools/make-test-clip.ps1.
+fixtures/rtf-fr-*.wav
+fixtures/carry-fr-*.wav

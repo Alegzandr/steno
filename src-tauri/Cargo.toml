@@ -14,6 +14,15 @@ edition = "2021"
 name = "steno_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+default = []
+# GPU backends for whisper.cpp. Opt-in because each needs a toolchain the
+# default build does not: `cuda` requires the CUDA toolkit and a `CUDA_PATH`,
+# `vulkan` requires the Vulkan SDK. The CPU build needs neither and is what
+# `cargo build` gives you.
+cuda = ["whisper-rs/cuda"]
+vulkan = ["whisper-rs/vulkan"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
@@ -28,14 +37,46 @@ cpal = "0.18"
 rubato = { version = "4", default-features = false }
 hound = "3.5"
 thiserror = "2"
+# Vendored, not from crates.io, for a three-line patch that adds the missing
+# `set_carry_initial_prompt`. See "Vendored whisper-rs patch" in CLAUDE.md
+# before touching this line. `vendor/whisper-rs` depends on `whisper-rs-sys`
+# from crates.io exactly as the published crate does, so whisper.cpp itself is
+# NOT vendored and is not rebuilt by this.
+#
+# No default features: they are all backend selectors, and the CPU backend is
+# what whisper.cpp builds when none is named.
+whisper-rs = { path = "vendor/whisper-rs", version = "0.16", default-features = false }
+# `default-tls` is schannel on Windows: the OS trust store, no vendored crypto
+# and no extra build tooling. `stream` is what makes a resumable download and a
+# cancellable Ollama stream possible at all.
+reqwest = { version = "0.13", default-features = false, features = [
+    "json",
+    "stream",
+    "default-tls",
+] }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+sha2 = "0.10"
+# Ctrl+Enter copies the buffer. The webview's own clipboard API needs document
+# focus, which is the one thing this window deliberately never takes.
+tauri-plugin-clipboard-manager = "2"
 
 [target.'cfg(target_os = "windows")'.dependencies]
-# Not used directly. cpal declares `windows` and `windows-core` as two
-# independent ">=0.61, <=0.62" ranges; Tauri pins `windows` to 0.61 but leaves
+# cpal declares `windows` and `windows-core` as two independent
+# ">=0.61, <=0.62" ranges; Tauri pins `windows` to 0.61 but leaves
 # `windows-core` free, so Cargo picks 0.62 for it and cpal's WASAPI backend
-# fails to build against two incompatible copies of the same types. Naming it
-# here forces both onto 0.61.
+# fails to build against two incompatible copies of the same types. Naming
+# `windows-core` here forces both onto 0.61.
 windows-core = "0.61"
+# DXGI for the video-memory probe that picks the default model, job objects so
+# a spawned Ollama server cannot outlive Steno. Held at 0.61 for the same
+# reason as above.
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
 
 [dev-dependencies]
 # Spectrum analysis for the anti-aliasing test. Test-only, never bundled.

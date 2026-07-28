@@ -1,0 +1,5 @@
+Alors, je voudrais refactorer le module de capture audio, parce que pour l'instant
+on ouvre le périphérique à chaque enregistrement et ça coûte trois cent cinquante
+millisecondes à froid. L'idée, ce serait de préchauffer le endpoint au démarrage,
+dans un thread séparé. Pour la transcription, on passe par whisper-rs avec la
+feature cuda, et le modèle large-v3.

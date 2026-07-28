@@ -1,16 +1,24 @@
 use tauri::{AppHandle, Manager, Runtime, WebviewWindow};
 
+use crate::lifecycle;
+
 pub const MAIN: &str = "main";
 
-/// Take the mini editor off screen.
+/// Take the mini editor off screen, and give the video memory back.
 pub fn hide<R: Runtime>(app: &AppHandle<R>) {
     if let Some(window) = app.get_webview_window(MAIN) {
         let _ = window.hide();
     }
+
+    lifecycle::on_hide(app);
 }
 
 /// Bring the mini editor on screen without taking the keyboard away from the
 /// app the user was typing in.
+///
+/// Also where the two expensive resources start loading. Tauri has no "window
+/// became visible" event, and this is the only place the window is shown, so
+/// hooking the call rather than an event is both simpler and exact.
 pub fn show_without_stealing_focus<R: Runtime>(window: &WebviewWindow<R>) {
     // On Windows, tao honours `focus: false` only for the very first show;
     // every later ShowWindow(SW_SHOW) activates the window. `set_focusable`
@@ -27,4 +35,6 @@ pub fn show_without_stealing_focus<R: Runtime>(window: &WebviewWindow<R>) {
 
     #[cfg(windows)]
     let _ = window.set_focusable(true);
+
+    lifecycle::on_show(window.app_handle());
 }

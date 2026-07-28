@@ -19,8 +19,9 @@ fn talk_shortcut() -> Shortcut {
     Shortcut::new(Some(primary() | Modifiers::SHIFT), Code::KeyD)
 }
 
-/// Temporary. Nothing else hides the window until Cmd/Ctrl+Enter arrives with
-/// the editor, and the mini editor otherwise stays on screen for good.
+/// Hides without copying. Cmd/Ctrl+Enter in the editor does both, but that one
+/// is a webview key: it only fires when Steno has focus, and the whole point of
+/// this window is that it usually does not.
 fn hide_shortcut() -> Shortcut {
     Shortcut::new(Some(primary() | Modifiers::SHIFT), Code::KeyH)
 }

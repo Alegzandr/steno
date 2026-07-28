@@ -1,0 +1,112 @@
+bon alors je reprends le sujet du pipeline de déploiement parce que là ça fait
+trois semaines qu'on en parle et on n'a toujours rien tranché euh ce que je
+voudrais c'est qu'on arrive à un truc où on pousse sur main et ça part tout seul
+en staging sans que personne ait à cliquer sur quoi que ce soit du coup la
+première chose c'est de virer les étapes manuelles qui restent il y en a trois
+je crois enfin deux et demie parce que la migration de base elle est semi
+automatique déjà
+
+donc premier point le build actuellement on build deux fois une fois pour les
+tests une fois pour l'image docker et ça c'est complètement idiot on devrait
+build une seule fois produire l'artefact et le réutiliser partout après enfin je
+dis ça mais il faut vérifier que le cache de cargo il est bien partagé entre les
+jobs sinon on gagne rien du tout en fait
+
+deuxième point les tests d'intégration ils tournent contre une vraie base
+postgres qu'on lance en service dans le runner et ça marche mais c'est lent
+genre huit minutes et je pense qu'on pourrait descendre à deux ou trois si on
+parallélisait par module euh le souci c'est que les tests partagent le même
+schéma donc il faudrait isoler par transaction ou créer un schéma par worker je
+sais pas ce qui est le plus simple
+
+troisième point et c'est le plus gros la migration de base de données
+actuellement on lance le script à la main après le déploiement et évidemment un
+jour quelqu'un va oublier ce que je veux c'est que la migration parte
+automatiquement mais avec un garde-fou genre si la migration est destructive on
+demande une confirmation explicite sinon ça passe tout seul il faudrait
+peut-être marquer les migrations avec un flag dans le nom du fichier ou dans un
+commentaire en tête je sais pas
+
+ah oui et il faut qu'on parle du rollback parce que là si le déploiement se
+passe mal on n'a aucun moyen de revenir en arrière proprement enfin si on peut
+redéployer l'image précédente mais la base elle a déjà migré donc ça marche pas
+vraiment du coup soit on s'impose des migrations toujours rétrocompatibles soit
+on accepte qu'un rollback c'est une opération manuelle et on l'assume et on
+documente la procédure quelque part
+
+sur la partie observabilité je voudrais qu'on ait au minimum un trace id qui
+traverse toute la requête depuis le load balancer jusqu'à la base parce que là
+quand un truc est lent on est incapables de dire où ça bloque on regarde les
+logs de trois services différents et on essaie de recoller les morceaux à la
+main c'est pas sérieux donc middleware qui génère l'identifiant s'il n'existe
+pas le propage dans les en-têtes et le met dans le contexte de log
+
+et puis euh le monitoring des files d'attente parce qu'on a des jobs asynchrones
+qui peuvent s'accumuler sans que personne s'en rende compte il faudrait une
+alerte si la profondeur de la file dépasse un seuil pendant plus de cinq minutes
+et aussi une alerte si l'âge du plus vieux message dépasse quelque chose parce
+que la profondeur toute seule ça ment un peu tu peux avoir dix messages dont un
+qui est coincé depuis deux heures
+
+alors sur la sécurité il y a deux ou trois trucs qui traînent d'abord les
+secrets qui sont encore dans les variables d'environnement du runner en clair il
+faudrait passer par le gestionnaire de secrets et les injecter au moment du
+déploiement pas au moment du build ensuite les images docker on ne les scanne
+pas du tout donc on ne sait absolument pas si on embarque une bibliothèque
+vulnérable et enfin les dépendances il faudrait un audit automatique qui casse
+le build si une vulnérabilité critique apparaît enfin critique ou haute je sais
+pas où mettre le curseur
+
+pour la partie front le déploiement est différent parce que c'est du statique
+donc en théorie c'est plus simple mais en pratique on a un souci de cache les
+utilisateurs gardent l'ancien bundle pendant des heures après un déploiement du
+coup il faudrait des noms de fichiers avec un hash ce qui est déjà le cas je
+crois mais l'index lui il est mis en cache aussi et ça c'est le problème donc
+index avec un cache très court et le reste immuable
+
+euh qu'est ce que j'ai oublié ah oui la question des environnements éphémères ce
+serait vraiment bien d'avoir un environnement par pull request avec sa propre
+base une base vide avec juste les fixtures parce que tester une migration contre
+une base vide ça ne prouve pas grand chose mais bon c'est déjà mieux que rien et
+ça permettrait aux gens du produit de regarder une fonctionnalité avant qu'elle
+soit mergée
+
+dernier truc la documentation il faut absolument qu'on écrive quelque part
+comment tout ça marche parce que là c'est dans la tête de deux personnes et si
+elles sont en vacances en même temps personne ne peut débloquer un déploiement
+et ça c'est un risque qu'on n'a pas le droit de prendre donc un fichier dans le
+dépôt avec la procédure les commandes et surtout quoi faire quand ça casse
+
+ah et j'oubliais complètement la question des tests de charge parce que là on
+déploie sans jamais avoir vérifié que ça tient et le jour où on aura du trafic
+on va le découvrir en production ce qui est la pire façon de l'apprendre donc il
+faudrait au minimum un scénario nominal qui tape les trois endpoints les plus
+utilisés avec disons cent utilisateurs simultanés et qu'on regarde les temps de
+réponse au percentile quatre-vingt-quinze pas la moyenne parce que la moyenne
+elle cache tout
+
+et dans le même ordre d'idées les timeouts on n'en a nulle part enfin si il y a
+les timeouts par défaut de la bibliothèque http mais personne ne les a jamais
+regardés et je suis à peu près sûr que certains sont à trente secondes ce qui
+veut dire qu'un service lent en amont bloque un worker pendant trente secondes
+et avec quelques requêtes comme ça on sature tout le pool donc timeout explicite
+partout et court avec un disjoncteur qui coupe si le taux d'erreur monte
+
+sur la gestion des dépendances aussi il faudrait qu'on décide une bonne fois si
+on fige les versions ou pas parce que là c'est un mélange des deux certains
+paquets sont figés au patch près d'autres sont en version majeure ouverte et du
+coup on a des builds qui ne sont pas reproductibles entre deux machines je
+propose qu'on fige tout dans le fichier de verrouillage et qu'on ait un job
+hebdomadaire qui propose les montées de version dans une pull request séparée
+
+et le dernier point vraiment le dernier c'est la gestion des feature flags parce
+qu'on commence à en avoir une dizaine et il n'y a aucun inventaire personne ne
+sait lesquels sont encore actifs lesquels sont morts et lesquels sont activés
+pour tout le monde depuis six mois et pourraient être retirés du code il
+faudrait une convention de nommage avec une date d'expiration dedans et un test
+qui échoue quand un flag dépasse sa date
+
+voilà en gros je pense qu'on peut découper ça en quatre chantiers le build
+unifié les tests parallélisés les migrations automatiques et l'observabilité et
+si on en fait un par sprint on est bons d'ici la fin du trimestre enfin en
+théorie parce qu'on sait tous comment ça se passe en pratique

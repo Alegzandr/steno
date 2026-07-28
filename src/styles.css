@@ -127,19 +127,163 @@ body {
   padding: 2px 7px 4px;
 }
 
+.action-quit {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.action-quit:hover {
+  color: var(--rec);
+}
+
 .editor-slot {
+  position: relative;
   flex: 1 1 auto;
   min-height: 0;
   padding: 12px;
+  display: flex;
+  flex-direction: column;
 }
 
-/* Replaced by the CodeMirror instance in a later phase. */
-.editor-placeholder {
-  height: 100%;
-  padding: 12px;
-  border: 1px dashed var(--border);
+.editor {
+  flex: 1 1 auto;
+  min-height: 0;
+  border: 1px solid var(--border);
   border-radius: 6px;
+  background: var(--bg-raised);
+  overflow: hidden;
+}
+
+.editor:focus-within {
+  border-color: #3a3a45;
+}
+
+/* The cleanup preview: over the buffer, never in it. Muted because it is
+   provisional until the final token commits it as one undo step. */
+.stream {
+  position: absolute;
+  inset: 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-raised);
   overflow: auto;
+}
+
+.stream-text {
+  margin: 0;
+  padding: 10px 12px;
+  font-family: ui-monospace, SFMono-Regular, "Cascadia Mono", Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text-muted);
+}
+
+.caret {
+  display: inline-block;
+  width: 7px;
+  height: 1em;
+  vertical-align: text-bottom;
+  background: var(--level);
+  animation: blink 1s step-end infinite;
+}
+
+@keyframes blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+/* Sits over an empty buffer instead of being inserted into it. Text in the
+   buffer would be text the user has to delete before dictating. */
+.watermark {
+  position: absolute;
+  top: 22px;
+  left: 25px;
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-muted);
+  pointer-events: none;
+}
+
+.overlays {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.overlays > * {
+  pointer-events: auto;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  box-shadow: 0 6px 18px rgb(0 0 0 / 45%);
+}
+
+.toolbar {
+  display: flex;
+  gap: 8px;
+  padding: 0 12px 12px;
+}
+
+.primary,
+.secondary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.primary {
+  flex: 1 1 auto;
+  justify-content: center;
+  background: #2f6f4f;
+  border-color: #2f6f4f;
+  color: #f2fff8;
+}
+
+.primary:hover:not(:disabled) {
+  background: #36805b;
+}
+
+.primary-busy {
+  background: #5a3a1e;
+  border-color: #5a3a1e;
+  color: #ffeede;
+}
+
+.secondary {
+  background: var(--bg-raised);
+  color: var(--text);
+}
+
+.secondary:hover:not(:disabled) {
+  border-color: #3a3a45;
+}
+
+.secondary-done {
+  background: #2f6f4f;
+  border-color: #2f6f4f;
+  color: #f2fff8;
+}
+
+.primary:disabled,
+.secondary:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 
 .hint,
@@ -257,4 +401,164 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* --- Phase 3: model download, transcription, GPU residency --- */
+
+/* First launch. Occupies the editor slot entirely: there is nothing else the
+   user can usefully do until the model is on disk. */
+.download {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  height: 100%;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: auto;
+}
+
+.download-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.download-why {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+.download-path {
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-size: 11px;
+  word-break: break-all;
+}
+
+.download-bar {
+  height: 6px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.download-fill {
+  height: 100%;
+  background: var(--level);
+  /* Only ever advances, and a 200 ms event cadence looks stepped without it. */
+  transition: width 200ms linear;
+}
+
+.download-stats {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px 12px;
+  margin: 0;
+  font-size: 12px;
+}
+
+.download-stats dt {
+  color: var(--text-muted);
+}
+
+.download-stats dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.download-actions {
+  margin-top: auto;
+}
+
+.action-primary {
+  color: var(--text);
+  border-color: var(--level);
+}
+
+/* Transcription in flight. */
+.working {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 10px;
+  font-size: 12px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.spinner {
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--border);
+  border-top-color: var(--level);
+  border-radius: 50%;
+  animation: spin 700ms linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner {
+    animation: none;
+    border-top-color: var(--border);
+  }
+}
+
+.failure {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-start;
+  margin-bottom: 10px;
+}
+
+/* The status bar stacks vertically; this is the one row inside it that has to
+   put two things at opposite ends. */
+.status-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* What is on the GPU right now. The card is shared with whatever else the
+   machine is doing, so this is not a debug readout. */
+.residency {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 6px;
+}
+
+.resident {
+  padding: 1px 5px;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--text-muted);
+}
+
+.resident-loading {
+  border-color: var(--level);
+  color: var(--level);
+  opacity: 0.6;
+}
+
+.resident-ready {
+  border-color: var(--level);
+  color: var(--level);
+}
+
+.resident-failed {
+  border-color: var(--rec);
+  color: var(--rec);
 }

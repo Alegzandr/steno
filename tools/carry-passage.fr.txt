@@ -1,0 +1,18 @@
+Bon, alors, je reprends depuis le début parce que j'ai besoin de poser les choses
+à voix haute avant de me lancer. Ce que je veux, au fond, c'est arrêter de perdre
+du temps le matin. En ce moment je commence par relire ce que j'ai écrit la
+veille, puis je change d'avis, puis je recommence, et à midi je n'ai toujours
+rien avancé. Donc la première chose, ce serait de décider la veille au soir ce
+que je ferai le lendemain, et de m'y tenir même si l'envie n'y est pas. La
+deuxième, c'est de couper les notifications pendant les deux premières heures,
+sans exception, même quand ça paraît urgent. La troisième, et c'est la plus
+difficile, c'est d'accepter qu'une journée où j'avance sur une seule chose reste
+une bonne journée. Voilà pour le cadre général, on verra bien ce que ça donne à
+la fin de la semaine prochaine.
+
+Maintenant, la partie technique. Je veux packager l'application avec Tauri,
+lancer le build avec cargo et npm, écrire l'interface en TypeScript et en React.
+Le formatage passera par Ollama, en local. Il me faut un endpoint dédié, un
+middleware qui valide le JSON, et une API que je pourrai appeler depuis le CLI.
+Pour la transcription, ce sera whisper, côté Rust. Il faudra refactorer tout ça
+ensuite.

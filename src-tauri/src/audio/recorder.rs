@@ -235,6 +235,10 @@ fn run<R: Runtime>(
         },
     );
 
+    // Dictating counts as activity: the idle watcher must not decide the user
+    // has wandered off in the middle of a long session.
+    crate::lifecycle::touch(&app);
+
     let reason = meter(&app, &capture, &stops, live_at);
 
     // Release the device before spending time on the file.
@@ -376,6 +380,12 @@ fn write_clip(raw: &[f32], config: &InputConfig) -> Result<(PathBuf, usize), sup
     Ok((path, len))
 }
 
+/// Announces the finished clip and hands it straight to Whisper.
+///
+/// Chaining here rather than from the webview keeps the temp file's whole life
+/// in Rust: it is written here, read by the transcriber, and deleted by it. A
+/// webview reload in the middle of a dictation cannot strand it on disk or lose
+/// the transcript.
 fn emit_complete<R: Runtime>(
     app: &AppHandle<R>,
     path: &Path,
@@ -394,6 +404,8 @@ fn emit_complete<R: Runtime>(
             reason,
         },
     );
+
+    crate::transcribe::spawn(app, path.to_path_buf());
 }
 
 fn duration_ms(samples: usize, rate: u32) -> u64 {
