@@ -321,6 +321,18 @@ accident, and the app's next save overwrote the file with defaults. The bug it
 exposed was real and is fixed, but the fixture had no business being there.
 Reading a real file to copy it is fine; writing one is not.
 
+Before any operation that loads models, allocates significant VRAM, or otherwise
+contends for machine resources, check what is already running. If a game, a
+GPU-heavy application or anything holding significant VRAM is active, stop and
+ask rather than proceeding. This machine is dual-use and that is the premise the
+whole VRAM discipline rests on.
+
+The three rules above were each written after the fact — synthetic input, an
+overwritten settings.json, a 12 GB model load during a game. They are instances
+of one rule: **the live desktop session is not the test environment**. Before a
+harness touches anything outside the repository and the temp directory, say what
+it will touch and ask.
+
 ## Product framing
 
 Steno is a sidecar for developers writing prompts. The user keeps it open on
