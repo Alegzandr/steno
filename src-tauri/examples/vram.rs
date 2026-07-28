@@ -1,4 +1,4 @@
-//! Proves the video memory actually comes back, rather than trusting the APIs
+﻿//! Proves the video memory actually comes back, rather than trusting the APIs
 //! that say it will.
 //!
 //! Three separate claims, three subcommands:
@@ -9,23 +9,22 @@
 //! cargo run --release --example vram -- job
 //! ```
 //!
-//! * `whisper` — load a Whisper context, drop it, and read `nvidia-smi` at each
+//! * `whisper` â€” load a Whisper context, drop it, and read `nvidia-smi` at each
 //!   step. Dropping a `WhisperContext` frees its own buffers; whether ggml's
 //!   per-device CUDA state comes back with it is a question only the meter can
 //!   answer.
-//! * `ollama`  — warm the formatting model, drop the claim, and watch the
+//! * `ollama`  â€” warm the formatting model, drop the claim, and watch the
 //!   memory return. Deliberately reads the meter *after* `/api/ps` goes quiet,
 //!   because the HTTP call returns before the runner process holding the memory
 //!   has exited.
-//! * `job`     — the one claim that cannot be checked by reading code: that a
+//! * `job`     â€” the one claim that cannot be checked by reading code: that a
 //!   child in a kill-on-close job object dies when its parent is force-killed
 //!   rather than shut down. The parent here is terminated with
 //!   `TerminateProcess`, the same call Task Manager's End task makes, so no
 //!   destructor, exit hook or unwinding runs.
 
-use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::thread;
 use std::time::Duration;
 
@@ -34,14 +33,12 @@ fn main() {
 
     match args.next().as_deref() {
         Some("whisper") => whisper(args.next().map(PathBuf::from)),
-        Some("ollama") => ollama(args.next()),
+        Some("llm") => llm(args.next().map(PathBuf::from)),
         Some("both") => both(args.next().map(PathBuf::from), args.next().map(PathBuf::from)),
-        Some("job") => job(),
-        Some("job-host") => job_host(),
         _ => {
             eprintln!(
-                "usage: vram <whisper <models-dir> | ollama [model] \
-                 | both <models-dir> <buffer.txt> | job>"
+                "usage: vram <whisper <models-dir> | llm <model.gguf> \
+                 | both <models-dir> <buffer.txt>>"
             );
             std::process::exit(2);
         }
@@ -95,7 +92,7 @@ fn whisper(models_dir: Option<PathBuf>) {
 
     // Two full cycles, because one number cannot tell the two failure modes
     // apart. A fixed residue that does not grow is ggml's per-device CUDA
-    // state — one context, one cuBLAS handle, one memory pool — which is
+    // state â€” one context, one cuBLAS handle, one memory pool â€” which is
     // created on first use and lives until the process exits. A residue that
     // grows with each cycle is a leak, and a very different problem.
     for cycle in 1..=2 {
@@ -123,65 +120,58 @@ fn whisper(models_dir: Option<PathBuf>) {
     report(baseline, peak, released, GGML_DEVICE_STATE_MIB);
 }
 
-fn ollama(model: Option<String>) {
-    use steno_lib::format::model::Loaded;
-    use steno_lib::format::server::{self, Server};
+/// The formatting model, loaded and dropped in this process.
+///
+/// Before 5.1 the weights lived in Ollama and "released" meant released to the
+/// byte, because the memory was never ours to begin with. It is ours now, so
+/// this shares the whisper case's allowance: ggml's per-device CUDA state is
+/// created on first use and freed only at process exit. Linking a second ggml
+/// did not double it â€” measured flat at 253 MiB across six load/unload cycles,
+/// with no drift.
+fn llm(gguf: Option<PathBuf>) {
+    use steno_lib::format::model::{Loaded, Params};
 
-    let endpoint = "http://127.0.0.1:11434";
-    let model = model.unwrap_or_else(|| "qwen3:14b".to_owned());
+    let Some(path) = gguf else {
+        eprintln!("usage: vram llm <model.gguf>");
+        std::process::exit(2);
+    };
 
-    let models_dir = steno_lib::config::Settings::default().ollama.models_dir;
-    let server = Server::ensure(endpoint, models_dir.as_deref());
-    println!("ollama   {model} on {endpoint} ({:?})", server.ownership);
-
-    if !server.is_reachable() {
-        eprintln!("no server, and none could be started");
-        std::process::exit(1);
-    }
-
-    if server.is_foreign(&model) {
-        eprintln!(
-            "{model} was already resident before this harness started. It belongs to \
-             something else, so unloading it is not ours to do. Skipping."
-        );
-        std::process::exit(0);
-    }
-
+    println!("llm      {}", path.display());
     let baseline = meter("baseline");
 
-    let loaded = match Loaded::warm(endpoint, &model, "20m", false) {
+    let loaded = match Loaded::load(Params {
+        path,
+        n_gpu_layers: steno_lib::config::Settings::default().llm.n_gpu_layers,
+    }) {
         Ok(loaded) => loaded,
         Err(error) => {
-            eprintln!("could not warm the model: {error}");
+            eprintln!("could not load the model: {error}");
             std::process::exit(1);
         }
     };
-    println!("  cold start                   {:>6} ms", loaded.load_ms);
+    println!("  load                         {:>6} ms", loaded.load_ms);
     let resident = meter("model resident");
 
-    // `Drop` sends keep_alive: 0 and then polls /api/ps until the model is gone.
     drop(loaded);
+    // The driver does not hand video memory back the instant a model dies.
+    std::thread::sleep(Duration::from_secs(3));
     let released = meter("model unloaded");
 
-    println!("  still in /api/ps             {:?}", server::model_names(endpoint));
-    // No allowance: the weights are in another process, so "released" means
-    // released to the byte.
-    report(baseline, resident, released, NOISE_MIB);
+    report(baseline, resident, released, GGML_DEVICE_STATE_MIB);
 }
 
 /// The peak: both models resident at once, during a real cleanup.
 ///
 /// This is the acceptance row that cannot be reached from the outside without
 /// somebody holding down push-to-talk, so it is reached through the same code
-/// the app runs instead — `Engine`, `Loaded` and `cleanup::transfer`, in the
+/// the app runs instead â€” `Engine`, `Loaded` and `cleanup::transfer`, in the
 /// order a dictation followed by a cleanup puts them in.
 fn both(models_dir: Option<PathBuf>, buffer: Option<PathBuf>) {
     use std::sync::atomic::AtomicBool;
 
     use steno_lib::config::{Settings, WhisperSettings};
     use steno_lib::format::cleanup::{transfer, Outcome, Request};
-    use steno_lib::format::model::Loaded;
-    use steno_lib::format::server::Server;
+    use steno_lib::format::model::{Loaded, Params};
     use steno_lib::model;
     use steno_lib::transcribe::engine::Engine;
 
@@ -199,16 +189,10 @@ fn both(models_dir: Option<PathBuf>, buffer: Option<PathBuf>) {
     let request = Request::from_settings(&settings);
     let spec = model::default_spec();
 
-    let server = Server::ensure(&request.endpoint, settings.ollama.models_dir.as_deref());
-    println!(
-        "both     {} + {} ({:?})",
-        spec.id, request.model, server.ownership
-    );
-    if !server.is_reachable() {
-        eprintln!("no Ollama server, and none could be started");
-        std::process::exit(1);
-    }
-    let foreign = server.is_foreign(&request.model);
+    // Both models come out of the same directory now, which is the whole
+    // simplification 5.1 bought: one place, one drive, no second process.
+    let gguf = models_dir.join(&settings.llm.model_file);
+    println!("both     {} + {}", spec.id, settings.llm.model_file);
 
     let baseline = meter("baseline");
 
@@ -219,12 +203,10 @@ fn both(models_dir: Option<PathBuf>, buffer: Option<PathBuf>) {
     let _ = engine.run(&vec![0.0f32; 16_000 * 5], &WhisperSettings::default());
     meter("whisper resident");
 
-    let loaded = Loaded::warm(
-        &request.endpoint,
-        &request.model,
-        &request.keep_alive,
-        foreign,
-    )
+    let loaded = Loaded::load(Params {
+        path: gguf,
+        n_gpu_layers: settings.llm.n_gpu_layers,
+    })
     .unwrap_or_else(|error| {
         eprintln!("could not load the formatting model: {error}");
         std::process::exit(1);
@@ -233,7 +215,7 @@ fn both(models_dir: Option<PathBuf>, buffer: Option<PathBuf>) {
 
     let cancel = AtomicBool::new(false);
     let sink = |_: &str| {};
-    let during = match transfer(&request, &text, &cancel, &sink) {
+    let during = match transfer(&loaded, &request, &text, &cancel, &sink) {
         Ok(Outcome::Complete(done)) => {
             let during = meter("during the cleanup");
             println!("  cleanup                      {:>6} ms", done.total_ms);
@@ -255,13 +237,6 @@ fn both(models_dir: Option<PathBuf>, buffer: Option<PathBuf>) {
     let released = meter("both released");
 
     report(baseline, peak.max(during), released, GGML_DEVICE_STATE_MIB);
-
-    if foreign {
-        println!(
-            "  note                         {} was already resident and was left loaded",
-            request.model
-        );
-    }
 }
 
 /// Other applications move the figure between two reads, so a few tens of
@@ -270,7 +245,7 @@ const NOISE_MIB: u64 = 64;
 
 /// ggml creates one CUDA context, cuBLAS handle and memory pool per device on
 /// first use and frees them only at process exit. Measured at ~222 MiB and
-/// constant across load/drop cycles, so it is not a leak — see the accepted
+/// constant across load/drop cycles, so it is not a leak â€” see the accepted
 /// deviation in CLAUDE.md. Anything materially above this is a real failure.
 const GGML_DEVICE_STATE_MIB: u64 = 320;
 
@@ -292,96 +267,4 @@ fn report(baseline: Option<u64>, peak: Option<u64>, released: Option<u64>, allow
         "MEMORY NOT RETURNED"
     };
     println!("  verdict                      {verdict}");
-}
-
-/// Parent side of the force-kill test.
-fn job() {
-    let exe = std::env::current_exe().expect("current exe");
-
-    let mut host = Command::new(&exe)
-        .arg("job-host")
-        .stdout(Stdio::piped())
-        .spawn()
-        .expect("spawn the host");
-
-    let stdout = host.stdout.take().expect("piped stdout");
-    let mut lines = BufReader::new(stdout).lines();
-    let announced = lines
-        .next()
-        .and_then(|line| line.ok())
-        .expect("the host announces its child");
-
-    let child_pid: u32 = announced
-        .trim()
-        .parse()
-        .unwrap_or_else(|_| panic!("unexpected announcement {announced:?}"));
-
-    println!("job      host pid {}, child pid {child_pid}", host.id());
-    println!("  child alive before kill      {}", alive(child_pid));
-
-    // TerminateProcess, exactly what Task Manager's End task does: no
-    // destructors, no exit hooks, no unwinding. Only the kernel closing our
-    // handles is left, which is the entire point of the job object.
-    host.kill().expect("terminate the host");
-    let _ = host.wait();
-
-    thread::sleep(Duration::from_millis(1_000));
-    let survived = alive(child_pid);
-    println!("  child alive after kill       {survived}");
-    println!(
-        "  verdict                      {}",
-        if survived { "ORPHANED" } else { "killed with the parent" }
-    );
-
-    if survived {
-        // Do not leave it running just because the test failed.
-        let _ = Command::new("taskkill").args(["/PID", &child_pid.to_string(), "/F"]).output();
-        std::process::exit(1);
-    }
-}
-
-/// Child side: builds the job exactly as `format::server` does, puts a
-/// long-lived process in it, then waits to be killed.
-fn job_host() {
-    #[cfg(windows)]
-    {
-        use std::os::windows::io::AsRawHandle;
-        use steno_lib::format::server::job::Job;
-
-        let job = Job::new().expect("create the job object");
-
-        // Stands in for `ollama serve`: something that will not exit on its own.
-        let child = Command::new("ping")
-            .args(["-n", "3600", "127.0.0.1"])
-            .stdout(Stdio::null())
-            .spawn()
-            .expect("spawn the stand-in child");
-
-        job.adopt(child.as_raw_handle()).expect("assign to the job");
-
-        println!("{}", child.id());
-        let _ = std::io::stdout().flush();
-
-        // Deliberately never returns. The parent terminates us.
-        loop {
-            thread::sleep(Duration::from_secs(1));
-        }
-    }
-
-    #[cfg(not(windows))]
-    {
-        eprintln!("the job object test is Windows-only");
-        std::process::exit(2);
-    }
-}
-
-fn alive(pid: u32) -> bool {
-    let output = Command::new("tasklist")
-        .args(["/FI", &format!("PID eq {pid}"), "/NH"])
-        .output();
-
-    match output {
-        Ok(output) => String::from_utf8_lossy(&output.stdout).contains(&pid.to_string()),
-        Err(_) => false,
-    }
 }

@@ -11,6 +11,7 @@ pub mod config;
 pub mod format;
 pub mod model;
 pub mod resident;
+pub mod storage;
 pub mod transcribe;
 
 use std::sync::Arc;
@@ -34,9 +35,11 @@ pub fn run() {
             commands::model::download_model,
             commands::model::cancel_model_download,
             commands::model::model_download_running,
+            commands::model::formatter_status,
+            commands::model::download_formatter_model,
             commands::transcribe::transcribe_file,
             commands::transcribe::residency,
-            commands::format::ollama_availability,
+            commands::format::llm_availability,
             commands::format::clean_up,
             commands::format::cancel_cleanup,
             commands::format::cleanup_running,
@@ -63,7 +66,6 @@ pub fn run() {
             // shown. Launching Steno must cost zero video memory.
             app.manage::<transcribe::Whisper>(Arc::new(resident::Resident::new("whisper")));
             app.manage::<format::Formatter>(Arc::new(resident::Resident::new("llm")));
-            app.manage(Arc::new(lifecycle::Ollama::default()));
             app.manage(Arc::new(lifecycle::Activity::default()));
             app.manage(Arc::new(format::cleanup::Cleanup::default()));
             app.manage(model::download::Downloads::default());
@@ -79,6 +81,15 @@ pub fn run() {
                 spec.id,
                 model::backend_name()
             );
+
+            // The ggml backend DLLs are opened lazily, long after startup, so a
+            // missing one is not a crash — it is a Steno that launches, records
+            // and transcribes, and then fails at the first Clean up, or quietly
+            // formats on the CPU at a minute a page. Say it now, while there is
+            // still an obvious connection between the message and the install.
+            if let Some(problem) = format::backends::diagnose(format::backends::locate().as_ref()) {
+                eprintln!("startup: {problem}");
+            }
 
             shortcut::register(app.handle())?;
 
@@ -99,8 +110,8 @@ pub fn run() {
         .expect("error while building the Tauri application");
 
     // `build` then `run` rather than `Builder::run`, purely so `Exit` can be
-    // observed: it is the last chance to unload the formatting model and stop
-    // an Ollama server we started.
+    // observed: it is the last chance to drop both models and return their
+    // video memory before the process goes.
     app.run(|handle, event| {
         if matches!(event, RunEvent::Exit) {
             lifecycle::on_exit(handle);

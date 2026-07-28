@@ -2,19 +2,16 @@ use std::sync::Arc;
 
 use tauri::{AppHandle, Manager, Runtime};
 
-use crate::config::Config;
 use crate::format::cleanup::{self, Cleanup};
 use crate::format::model::{self, Availability};
 
-/// Whether a cleanup could run right now, and the exact command to type if it
-/// could not.
+/// Whether a cleanup could run right now, and what to do if it could not.
 ///
-/// Checked before phase 4's Clean up button does anything, so "Ollama is not
-/// running" arrives as an instruction rather than as a timeout.
+/// Checked before the Clean up button does anything, so a missing model file
+/// arrives as a sentence rather than as a failure thirty seconds in.
 #[tauri::command]
-pub fn ollama_availability<R: Runtime>(app: AppHandle<R>) -> Availability {
-    let settings = app.state::<Config>().get().ollama;
-    model::availability(&settings.endpoint, &settings.model)
+pub fn llm_availability<R: Runtime>(app: AppHandle<R>) -> Availability {
+    model::availability(&crate::format::model_path(&app))
 }
 
 /// Restructures the whole buffer, streaming the result back as events.

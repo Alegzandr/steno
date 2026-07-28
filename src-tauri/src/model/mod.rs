@@ -64,6 +64,40 @@ pub const LARGE_V3_TURBO: ModelSpec = ModelSpec {
 
 pub const CATALOGUE: &[ModelSpec] = &[LARGE_V3, LARGE_V3_TURBO_Q5_0, LARGE_V3_TURBO];
 
+/// The formatting model, from Qwen's own GGUF repository rather than a
+/// third-party requantisation.
+///
+/// Deliberately not in `CATALOGUE`: that list is what `default_spec` chooses
+/// between and what `settings.json`'s `model.id` names, and both are about
+/// transcription. This is a separate axis with its own setting
+/// (`llm.modelFile`) and its own download.
+///
+/// Size and digest are the published values for `Qwen/Qwen3-14B-GGUF`. Note
+/// that Ollama's `qwen3:14b` blob is a *different* Q4_K_M of the same weights —
+/// 9,276,184,896 bytes against 9,001,752,960 here — so a file copied out of an
+/// Ollama store will not match this digest. It is close enough in size that the
+/// load-time measurements carry over, and not close enough to pretend they are
+/// the same file.
+pub const QWEN3_14B_Q4_K_M: ModelSpec = ModelSpec {
+    id: "Qwen3-14B-Q4_K_M.gguf",
+    url: "https://huggingface.co/Qwen/Qwen3-14B-GGUF/resolve/main/Qwen3-14B-Q4_K_M.gguf",
+    bytes: 9_001_752_960,
+    sha256: "500a8806e85ee9c83f3ae08420295592451379b4f8cf2d0f41c15dffeb6b81f0",
+    label: "Qwen3 14B (Q4_K_M)",
+};
+
+pub const FORMATTER_CATALOGUE: &[ModelSpec] = &[QWEN3_14B_Q4_K_M];
+
+/// The formatting model named in `settings.json`, when Steno knows how to fetch
+/// it.
+///
+/// `None` is not an error: `llm.modelFile` may name any GGUF the user has put
+/// in the models directory themselves, and Steno will load it happily. It only
+/// means there is nothing to offer to download.
+pub fn formatter_spec(file: &str) -> Option<&'static ModelSpec> {
+    FORMATTER_CATALOGUE.iter().find(|spec| spec.id == file)
+}
+
 /// Video memory below which large-v3 is not worth attempting.
 ///
 /// The nominal figure is 12 GB, but adapters report a little under their
@@ -155,7 +189,16 @@ pub struct ModelStatus {
 }
 
 pub fn status<R: Runtime>(app: &AppHandle<R>) -> ModelStatus {
-    let spec = *resolve(app);
+    status_of(app, resolve(app))
+}
+
+/// The same answer for a named model rather than the chosen transcription one.
+///
+/// `installed` is a size check, not a digest check, for both: re-hashing nine
+/// gigabytes on every launch would cost seconds to re-prove something the
+/// download already proved once.
+pub fn status_of<R: Runtime>(app: &AppHandle<R>, spec: &ModelSpec) -> ModelStatus {
+    let spec = *spec;
     let path = path(app, &spec);
 
     let installed = std::fs::metadata(&path)

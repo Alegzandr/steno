@@ -26,3 +26,12 @@ dist-ssr
 # Regenerated on demand by tools/make-test-clip.ps1.
 fixtures/rtf-fr-*.wav
 fixtures/carry-fr-*.wav
+
+# Staged by src-tauri/build.rs from llama-cpp-sys-2 output. Build artefacts,
+# not sources: 60 MB of DLLs that are rebuilt from the crate on any machine.
+src-tauri/runtime/
+
+# `CARGO_TARGET_DIR=target-cuda` resolves against the shell's working
+# directory, not against src-tauri/, so running cargo from the repo root
+# creates a second one here.
+/target-cuda/

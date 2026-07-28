@@ -1,7 +1,7 @@
 //! A resource that is loaded on demand, held while it is in use, and handed
 //! back the moment it is not.
 //!
-//! Both things Steno loads onto the GPU — the Whisper context and the Ollama
+//! Both things Steno loads onto the GPU — the Whisper context and the
 //! formatting model — have the same shape: expensive to load, worth warming
 //! ahead of time, and unacceptable to keep resident while the user is doing
 //! something else with their graphics card. This is that shape, once.
@@ -14,13 +14,18 @@
 //! the whole cycle repeats every time the window is hidden and shown.
 //!
 //! Releasing is `Drop` on `T`, not a callback. An eviction can therefore never
-//! half-happen, and a resource whose release is a network call — the Ollama
-//! model lives in another process — expresses that by implementing `Drop`.
-//! Values are always dropped outside the lock, because that release may block.
+//! half-happen. Values are always dropped outside the lock, because freeing
+//! nine gigabytes of video memory is not instantaneous and holding the mutex
+//! across it would stall every acquire.
+//!
+//! There is deliberately no `warm` method that loads on a thread of its own.
+//! Steno's two resources have to be warmed *in a known order* — see
+//! `lifecycle::warm_in_order` — and a fire-and-forget loader per resource is
+//! precisely the concurrent arrangement that ordering exists to avoid. Warming
+//! is `acquire` on a background thread, with the lease dropped immediately.
 
 use std::ops::Deref;
 use std::sync::{Arc, Condvar, Mutex};
-use std::thread;
 
 use serde::Serialize;
 
@@ -132,37 +137,6 @@ impl<T> Resident<T> {
         }
     }
 
-    /// Starts a load on a background thread and returns at once. Does nothing
-    /// if the value is already loaded or already loading, so calling it on
-    /// every window show is free after the first.
-    pub fn warm<L>(self: &Arc<Self>, load: L)
-    where
-        // `Sync` as well as `Send`: the background loader holds an `Arc<Self>`,
-        // so the resident itself has to cross the thread boundary, not just
-        // the value it will produce.
-        T: Send + Sync + 'static,
-        L: FnOnce() -> Result<T, String> + Send + 'static,
-    {
-        {
-            let mut slot = lock(&self.slot);
-            match &*slot {
-                Slot::Loading | Slot::Ready { .. } => return,
-                Slot::Cold | Slot::Failed(_) => *slot = Slot::Loading,
-            }
-        }
-
-        let this = self.clone();
-        let spawned = thread::Builder::new()
-            .name(format!("steno-warm-{}", self.label))
-            .spawn(move || this.settle(load()));
-
-        if let Err(error) = spawned {
-            // The slot says Loading and nothing is going to load it. Settle it
-            // as failed or every later acquire waits forever.
-            self.settle(Err(format!("could not spawn a warm-up thread ({error})")));
-        }
-    }
-
     /// Records the outcome of a load and wakes everyone waiting on it.
     ///
     /// The one way out of `Loading`. Every path that sets that state must reach
@@ -271,6 +245,7 @@ impl<T> Drop for Lease<'_, T> {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::thread;
     use std::time::Duration;
 
     /// Counts its own drops, standing in for a resource whose release matters.
@@ -378,21 +353,41 @@ mod tests {
         );
     }
 
+    /// The warm-up path is a background thread calling `acquire` and dropping
+    /// the lease at once — see `lifecycle::warm_in_order`. What that relies on
+    /// is that a second caller arriving mid-load waits for the first rather
+    /// than starting its own, which is what this pins.
     #[test]
-    fn warm_loads_in_the_background() {
+    fn a_second_caller_waits_for_the_load_in_progress() {
         let resident = Arc::new(Resident::new("test"));
+        let loads = Arc::new(AtomicUsize::new(0));
 
-        resident.warm(|| {
-            thread::sleep(Duration::from_millis(50));
-            Ok(42u32)
-        });
+        let background = {
+            let resident = resident.clone();
+            let loads = loads.clone();
+            thread::spawn(move || {
+                let lease = resident
+                    .acquire(move || {
+                        loads.fetch_add(1, Ordering::SeqCst);
+                        thread::sleep(Duration::from_millis(50));
+                        Ok(42u32)
+                    })
+                    .unwrap_or_else(|error| panic!("load should have succeeded: {error}"));
+                drop(lease);
+            })
+        };
 
-        // Second warm while the first is running must not start a second load.
-        resident.warm(|| Ok(0u32));
+        // Let the loader claim the slot before racing it.
+        while !resident.is_warm() {
+            thread::sleep(Duration::from_millis(1));
+        }
 
         let lease = resident
             .acquire(|| Ok(0u32))
             .unwrap_or_else(|error| panic!("acquire should have waited: {error}"));
-        assert_eq!(*lease, 42, "acquire returned before the warm-up finished");
+        assert_eq!(*lease, 42, "acquire returned before the load finished");
+        assert_eq!(loads.load(Ordering::SeqCst), 1, "the value was loaded twice");
+
+        background.join().expect("loader finished");
     }
 }

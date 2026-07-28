@@ -20,8 +20,8 @@ default = []
 # default build does not: `cuda` requires the CUDA toolkit and a `CUDA_PATH`,
 # `vulkan` requires the Vulkan SDK. The CPU build needs neither and is what
 # `cargo build` gives you.
-cuda = ["whisper-rs/cuda"]
-vulkan = ["whisper-rs/vulkan"]
+cuda = ["whisper-rs/cuda", "llama-cpp-2/cuda"]
+vulkan = ["whisper-rs/vulkan", "llama-cpp-2/vulkan"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -46,6 +46,24 @@ thiserror = "2"
 # No default features: they are all backend selectors, and the CPU backend is
 # what whisper.cpp builds when none is named.
 whisper-rs = { path = "vendor/whisper-rs", version = "0.16", default-features = false }
+# The formatting model, in this process. whisper.cpp and llama.cpp each vendor
+# their own copy of ggml, and MSVC resolves a duplicated symbol from whichever
+# static library it reaches first — a link that succeeds and a runtime that is
+# subtly wrong. `dynamic-link` + `dynamic-backends` is what avoids that: ggml
+# becomes a set of DLLs loaded at run time (BUILD_SHARED_LIBS=ON,
+# GGML_BACKEND_DL=ON), so there is nothing for the linker to pick between.
+#
+# The cost is that those DLLs must ship beside the executable and be found at
+# run time — see `format::backends`, and the `resources` entry in
+# tauri.conf.json. A missing one is not a load failure at startup, it is a
+# failure at the first cleanup, which is why startup checks for them.
+#
+# No default features: `openmp` needs a runtime this build does not ship, and
+# `common`/`android-*` are not used.
+llama-cpp-2 = { version = "0.1.152", default-features = false, features = [
+    "dynamic-link",
+    "dynamic-backends",
+] }
 # `default-tls` is schannel on Windows: the OS trust store, no vendored crypto
 # and no extra build tooling. `stream` is what makes a resumable download and a
 # cancellable Ollama stream possible at all.
@@ -67,15 +85,17 @@ tauri-plugin-clipboard-manager = "2"
 # fails to build against two incompatible copies of the same types. Naming
 # `windows-core` here forces both onto 0.61.
 windows-core = "0.61"
-# DXGI for the video-memory probe that picks the default model, job objects so
-# a spawned Ollama server cannot outlive Steno. Held at 0.61 for the same
-# reason as above.
+# DXGI for the video-memory probe that picks the default model, and the storage
+# IOCTLs for `storage::media_type` — a model directory on a spinning disk costs
+# a factor of fifty on first load and the user has no reason to suspect it.
+# Held at 0.61 for the same reason as above.
 windows = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Graphics_Dxgi",
     "Win32_Graphics_Dxgi_Common",
-    "Win32_System_JobObjects",
-    "Win32_System_Threading",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Ioctl",
+    "Win32_System_IO",
 ] }
 
 [dev-dependencies]

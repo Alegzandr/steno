@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 
 import { DevicePicker } from "./DevicePicker";
-import { Editor, type EditorHandle } from "./Editor";
+import { Editor, type EditorHandle, type HistoryState } from "./Editor";
+import { FormatBar } from "./FormatBar";
 import { LevelMeter } from "./LevelMeter";
 import { ModelDownload } from "./ModelDownload";
 import { useCleanup } from "./useCleanup";
@@ -21,6 +23,13 @@ const copyShortcut = isMac ? "⌘↵" : "Ctrl+Enter";
 
 /** Long enough to read "Copied", short enough not to feel like a delay. */
 const CONFIRMATION_MS = 450;
+
+/** How long "Cleaned up · Revert" stays on screen.
+ *
+ *  A generic undo button does not say what it will undo. This one does, and it
+ *  is only honest while the cleanup is still the top of the history — so it
+ *  also disappears the moment anything else changes the buffer. */
+const REVERT_MS = 8000;
 
 function clock(ms: number): string {
   const total = Math.floor(ms / 1000);
@@ -49,9 +58,55 @@ function App() {
 
   const [empty, setEmpty] = useState(true);
   const [copied, setCopied] = useState(false);
+  const [historyState, setHistoryState] = useState<HistoryState>({
+    canUndo: false,
+    canRedo: false,
+  });
+
+  // Every document change bumps this. The Revert affordance records the
+  // version it was armed at and withdraws as soon as they differ: once the
+  // user has typed, one Ctrl+Z no longer reaches the cleanup, and an offer to
+  // "revert the cleanup" that undoes their sentence instead would be a lie.
+  const docVersion = useRef(0);
+  const [revertAt, setRevertAt] = useState<number | null>(null);
 
   const recording = status === "recording";
   const needsModel = model.status !== null && !model.status.installed;
+
+  const onDocChange = useCallback((isEmpty: boolean) => {
+    setEmpty(isEmpty);
+    docVersion.current += 1;
+    setRevertAt((armed) => (armed === null || armed === docVersion.current ? armed : null));
+  }, []);
+
+  // `stats` becomes non-null exactly when a cleanup commits, which is the same
+  // moment the buffer changed — so the version recorded here already counts it.
+  useEffect(() => {
+    if (!cleanup.stats) return;
+    setRevertAt(docVersion.current);
+    const timer = window.setTimeout(() => setRevertAt(null), REVERT_MS);
+    return () => window.clearTimeout(timer);
+  }, [cleanup.stats]);
+
+  // The backend emits this at most once per run, and only when the models are
+  // on a mechanical drive. Dismissible and never repeated: it is a fact about
+  // the install, so telling the user twice adds nothing and telling them on
+  // every load would be nagging about something they may have chosen.
+  const [storageAdvisory, setStorageAdvisory] = useState<string | null>(null);
+
+  useEffect(() => {
+    const unlisten = listen<string>("storage-advisory", (event) =>
+      setStorageAdvisory(event.payload),
+    );
+    return () => {
+      void unlisten.then((stop) => stop());
+    };
+  }, []);
+
+  const revert = useCallback(() => {
+    editor.current?.undo();
+    setRevertAt(null);
+  }, []);
 
   // Each completed transcription is a fresh object, so a new one is exactly
   // what this should react to. Appending here rather than inside the hook
@@ -184,38 +239,77 @@ function App() {
       ) : (
         <>
           <main className="editor-slot">
-            <Editor
-              ref={editor}
-              readOnly={cleanup.running}
-              onChange={setEmpty}
-              onCopyAndHide={copyAndHide}
-              onCleanUp={runCleanUp}
-              onEscape={escape}
+            <FormatBar
+              canUndo={historyState.canUndo}
+              canRedo={historyState.canRedo}
+              disabled={cleanup.running}
+              onUndo={() => editor.current?.undo()}
+              onRedo={() => editor.current?.redo()}
+              onFormat={(kind) => editor.current?.format(kind)}
             />
 
-            {empty && !cleanup.running && (
-              <p className="watermark">
-                Hold {talkShortcut} to dictate. Bursts stack up here.
-              </p>
-            )}
+            {/* Its own positioning context, so the stream overlay covers the
+                buffer and not the toolbar above it. */}
+            <div className="editor-area">
+              <Editor
+                ref={editor}
+                readOnly={cleanup.running}
+                onChange={onDocChange}
+                onHistory={setHistoryState}
+                onCopyAndHide={copyAndHide}
+                onCleanUp={runCleanUp}
+                onEscape={escape}
+              />
 
-            {/* The cleanup streams here, over the buffer, and lands in it only
-                when it is finished. Nothing provisional gets into the document
-                or into its undo history. */}
-            {cleanup.running && (
-              <div className="stream">
-                <pre className="stream-text">
-                  {cleanup.preview}
-                  <span className="caret" />
-                </pre>
-              </div>
-            )}
+              {empty && !cleanup.running && (
+                <p className="watermark">
+                  Hold {talkShortcut} to dictate. Bursts stack up here.
+                </p>
+              )}
+
+              {/* The cleanup streams here, over the buffer, and lands in it
+                  only when it is finished. Nothing provisional gets into the
+                  document or into its undo history. */}
+              {cleanup.running && (
+                <div className="stream">
+                  <pre className="stream-text">
+                    {cleanup.preview}
+                    <span className="caret" />
+                  </pre>
+                </div>
+              )}
+            </div>
 
             {/* Transient state sits over the buffer rather than in it: the
                 buffer is the user's text and nothing else belongs in it. */}
             <div className="overlays">
+              {/* Named, not generic. "Undo" does not tell you it will undo the
+                  cleanup, and that uncertainty is what stops people trying the
+                  button at all. Withdrawn the moment the buffer changes again,
+                  because after that one Ctrl+Z no longer means this. */}
+              {revertAt !== null && (
+                <p className="reverted">
+                  Cleaned up
+                  <button className="action action-primary" onClick={revert}>
+                    Revert
+                  </button>
+                </p>
+              )}
+
               {!recording && !transcription.running && empty && (
                 <DevicePicker disabled={recording} />
+              )}
+
+              {storageAdvisory && (
+                <p className="advisory">
+                  {storageAdvisory}
+                  <button
+                    className="action"
+                    onClick={() => setStorageAdvisory(null)}
+                  >
+                    Dismiss
+                  </button>
+                </p>
               )}
 
               {notice && <p className="notice">{notice}</p>}

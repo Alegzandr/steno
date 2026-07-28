@@ -8,9 +8,16 @@
 //! cargo run --release --example cleanup -- <buffer.txt> [runs]
 //! ```
 //!
-//! Reports the model's own token counts from the final stream frame rather than
-//! guessing at them from character counts, so "a two-thousand token buffer"
-//! means what Ollama says it means.
+//! Reports the model's own token counts rather than guessing at them from
+//! character counts, so "a two-thousand token buffer" means what the tokeniser
+//! says it means.
+//!
+//! Since 5.1 the model file has to be named, because there is no server to ask
+//! where it keeps things:
+//!
+//! ```text
+//! cargo run --release --example cleanup -- <buffer.txt> <model.gguf> [runs]
+//! ```
 
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
@@ -18,14 +25,17 @@ use std::time::Instant;
 
 use steno_lib::config::Settings;
 use steno_lib::format::cleanup::{transfer, Outcome, Request};
-use steno_lib::format::model::{availability, Loaded};
-use steno_lib::format::server::Server;
+use steno_lib::format::model::{availability, Loaded, Params};
 
 fn main() {
     let mut args = std::env::args().skip(1);
 
     let Some(path) = args.next().map(PathBuf::from) else {
-        eprintln!("usage: cleanup <buffer.txt> [runs]");
+        eprintln!("usage: cleanup <buffer.txt> <model.gguf> [runs]");
+        std::process::exit(2);
+    };
+    let Some(gguf) = args.next().map(PathBuf::from) else {
+        eprintln!("usage: cleanup <buffer.txt> <model.gguf> [runs]");
         std::process::exit(2);
     };
     let runs: usize = args.next().and_then(|n| n.parse().ok()).unwrap_or(2).max(1);
@@ -38,33 +48,32 @@ fn main() {
     let settings = Settings::default();
     let request = Request::from_settings(&settings);
 
-    println!("endpoint       {}", request.endpoint);
-    println!("model          {}", request.model);
+    println!("model          {}", gguf.display());
     println!("temperature    {}", request.temperature);
+    println!("context        {} tokens", request.n_ctx);
     println!("buffer         {} chars", text.chars().count());
 
-    // Adopt a running server or start one, exactly as the app does. Held for
-    // the whole run: dropping it is what stops a server we started, and on
-    // Windows the job object takes it down even if this process is killed.
-    let server = Server::ensure(&request.endpoint, settings.ollama.models_dir.as_deref());
-    println!("server         {:?}", server.ownership);
-
-    let state = availability(&request.endpoint, &request.model);
+    let state = availability(&gguf);
     if !state.reachable || !state.model_installed {
         eprintln!(
             "not ready: {}",
-            state.remedy.unwrap_or_else(|| "unknown".to_owned())
+            state
+                .remedy
+                .unwrap_or_else(|| format!("{} is missing", state.model_path))
         );
         std::process::exit(1);
     }
 
-    // Warmed explicitly, and held, so the figures below measure generation
+    // Loaded explicitly, and held, so the figures below measure generation
     // rather than a model load that the app pays for on window show anyway.
-    let loaded = Loaded::warm(&request.endpoint, &request.model, &request.keep_alive, false)
-        .unwrap_or_else(|error| {
-            eprintln!("could not load the model: {error}");
-            std::process::exit(1);
-        });
+    let loaded = Loaded::load(Params {
+        path: gguf,
+        n_gpu_layers: settings.llm.n_gpu_layers,
+    })
+    .unwrap_or_else(|error| {
+        eprintln!("could not load the model: {error}");
+        std::process::exit(1);
+    });
     println!("warm-up        {} ms", loaded.load_ms);
     println!();
 
@@ -83,7 +92,7 @@ fn main() {
         let text = format!("séance {run}\n\n{text}");
 
         let started = Instant::now();
-        let outcome = transfer(&request, &text, &cancel, &sink).unwrap_or_else(|error| {
+        let outcome = transfer(&loaded, &request, &text, &cancel, &sink).unwrap_or_else(|error| {
             eprintln!("cleanup failed: {error}");
             std::process::exit(1);
         });

@@ -145,6 +145,78 @@ body {
   flex-direction: column;
 }
 
+/* --- Phase 5: the formatting toolbar --- */
+
+.formatbar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+  margin-bottom: 6px;
+}
+
+.mark {
+  min-width: 28px;
+  height: 24px;
+  padding: 0 6px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.mark:hover:not(:disabled) {
+  background: var(--bg-raised);
+  border-color: var(--border);
+  color: var(--text);
+}
+
+/* A greyed undo says "there is nothing to undo", which is the whole reason
+   these two are on screen. It has to read as off, not as merely quiet. */
+.mark:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+.mark-bold {
+  font-weight: 700;
+}
+
+.mark-code {
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+
+.mark-separator {
+  width: 1px;
+  height: 16px;
+  margin: 0 6px;
+  background: var(--border);
+}
+
+/* Wraps the buffer and the things that float over it, so the stream overlay
+   stops at the toolbar instead of covering it. */
+.editor-area {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+}
+
+/* Transient, and deliberately specific: it names what will be reverted. */
+.reverted {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
 .editor {
   flex: 1 1 auto;
   min-height: 0;
@@ -162,7 +234,8 @@ body {
    provisional until the final token commits it as one undo step. */
 .stream {
   position: absolute;
-  inset: 12px;
+  /* Exactly the editor box: `.editor-area` is its positioning context. */
+  inset: 0;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--bg-raised);
@@ -199,8 +272,9 @@ body {
    buffer would be text the user has to delete before dictating. */
 .watermark {
   position: absolute;
-  top: 22px;
-  left: 25px;
+  /* The editor's own 10px/12px content padding, plus its 1px border. */
+  top: 11px;
+  left: 13px;
   margin: 0;
   font-size: 12px;
   color: var(--text-muted);
@@ -291,6 +365,27 @@ body {
   margin: 0;
   font-size: 12px;
   color: var(--text-muted);
+}
+
+/* A fact about the install, not an error: the app works, it is just going to
+   be slow the first time. Styled to be noticed once and then dismissed, which
+   is why it carries its own button rather than fading on a timer. */
+.advisory {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text);
+}
+
+.advisory .action {
+  flex: none;
+  margin-left: auto;
 }
 
 /* Placeholder microphone picker. Folds into real settings in phase 5. */
