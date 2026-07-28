@@ -18,8 +18,11 @@ Do not substitute any of these without asking first.
   `ggml-large-v3-turbo-q5_0.bin` otherwise. CPU by default; CUDA and Vulkan
   behind opt-in cargo features. Dev machine is Windows x64 with an Nvidia GPU.
   macOS/Metal and Linux branches may be written but are not testable here.
-- Formatting: Ollama HTTP API at http://localhost:11434, streaming,
-  default model `qwen3:14b`
+- Formatting: `llama-cpp-2` (llama.cpp bindings), in-process, streaming,
+  default model `Qwen3-14B-Q4_K_M.gguf` downloaded from Hugging Face on first
+  use. There is no server, no HTTP, no port. Ollama was the phase-4 engine and
+  was removed in 5.1 — do not reintroduce it, and do not treat any surviving
+  mention of `11434`, `keep_alive` or a job object as current.
 - Storage: `tauri-plugin-sql` (SQLite)
 - Plugins: `tauri-plugin-global-shortcut`, `tauri-plugin-clipboard-manager`
 
@@ -76,19 +79,20 @@ enumeration proves nothing about WASAPI device naming or behaviour.
 
 ## Build prerequisites
 
-`whisper-rs-sys` compiles whisper.cpp with CMake and generates its bindings
-with bindgen, so the *default CPU build* needs two tools beyond the Rust
-toolchain. Neither is optional, and neither ships with Visual Studio in a form
-the build can find.
+`whisper-rs-sys` and `llama-cpp-sys-2` both compile their C++ with CMake and
+generate their bindings with bindgen, so the *default CPU build* needs two tools
+beyond the Rust toolchain. Neither is optional, and neither ships with Visual
+Studio in a form the build can find.
 
 | Tool | Why | Install |
 | --- | --- | --- |
-| CMake, on PATH | builds whisper.cpp | `winget install Kitware.CMake` |
+| CMake, on PATH | builds whisper.cpp and llama.cpp | `winget install Kitware.CMake` |
 | LLVM (libclang) | bindgen | `winget install LLVM.LLVM` |
 | CUDA Toolkit 12+ | `--features cuda` only | `winget install Nvidia.CUDA` |
-| Ollama | formatting | `winget install Ollama.Ollama`, then `ollama pull qwen3:14b` |
 
-Verified against CMake 4.4.0, LLVM 22.1.8, CUDA 13.3 and Ollama 0.32.4.
+Verified against CMake 4.4.0, LLVM 22.1.8 and CUDA 13.3. Nothing has to be
+installed for formatting: the model is a file Steno downloads, and llama.cpp is
+linked into the process.
 
 The CUDA build additionally needs `CUDA_PATH_V<major>_<minor>` in the
 environment, not just `CUDA_PATH`: the MSBuild integration reads the versioned
@@ -100,18 +104,6 @@ Set `CMAKE_CUDA_ARCHITECTURES` to the target card (`89` for Ada / RTX 40xx).
 The build script forwards any `CMAKE_*` variable to CMake. Without it ggml
 builds for every architecture it knows, which is slow and can fail outright
 against a CUDA release that has dropped the older ones.
-
-Ollama's model store is not always `%USERPROFILE%\.ollama\models`. The desktop
-app remembers a relocated store in its own settings database and passes it to
-the server *it* starts; a bare `ollama serve` does not inherit that and falls
-back to the default, which on a relocated setup is an empty directory. On this
-dev machine the store is `D:\.ollama\models`.
-
-That only bites when Steno has to start the server itself — adopting a running
-one is unaffected — and the symptom is a model you demonstrably have being
-reported as missing, with `ollama pull` offered as the fix. Set
-`ollama.modelsDir` in settings.json; it is passed as `OLLAMA_MODELS` to a
-spawned server and ignored when adopting one. Never guess the path in code.
 
 Keep the CUDA build in its own target directory (`CARGO_TARGET_DIR=target-cuda`,
 already gitignored) so switching features does not rebuild whisper.cpp each
@@ -125,6 +117,47 @@ independent ranges. Tauri pins `windows` to 0.61, nothing constrains
 compile. `windows-core` is pinned to 0.61.2 in Cargo.toml and Cargo.lock.
 Never run an untargeted `cargo update`. If the WASAPI backend suddenly stops
 compiling, check this first.
+
+## Two ggmls in one process, and where the DLLs go
+
+`llama-cpp-2` is built with `dynamic-link` + `dynamic-backends`, so llama.cpp
+arrives as DLLs while whisper.cpp is still linked statically. That means Steno
+contains **two independent ggml backend registries** and they do not see each
+other. Everything below follows from that and was established by installing a
+bundle, not by reading documentation.
+
+Fifteen DLLs must sit **flat, beside the executable**. Two kinds, failing two
+different ways:
+
+- `llama.dll`, `ggml.dll`, `ggml-base.dll`, `llama-common.dll` are resolved by
+  the Windows loader before `main`. Missing one gives exit code `0xC0000135`
+  and no message whatsoever.
+- `ggml-cpu-*.dll` (nine variants) and `ggml-cuda.dll` are opened later by ggml
+  itself. Missing them is not an error: the app starts, dictation works, and the
+  first Clean up fails with `no backends are loaded`.
+
+**Never call `load_backends_from_path` from Rust.** It fills whisper.cpp's
+static registry, which nothing then consults. `llama.dll` populates its own
+registry through `ggml_backend_load_best`, whose search path is fixed in ggml
+and is not ours to redirect: the compile-time `GGML_BACKEND_DIR`, then the
+executable's directory, then the working directory. **No `backends/`
+subdirectory is ever searched.** `format::backends` therefore only checks and
+reports; it does not load.
+
+The trap that caught this: `GGML_BACKEND_DIR` points into `target/` on a dev
+machine, so a bundle with the DLLs in the wrong place works here and only here.
+A layout change is verified by renaming the build tree away and running the
+*installed* app. `build.rs` stages `llama-cpp-sys-2`'s `out/bin` and
+`out/backends` into one `src-tauri/runtime/`, which `tauri.conf.json` maps with
+`"runtime/*.dll": ""`.
+
+**Open question, not yet decided.** A CUDA build imports `cublas64_*.dll` at
+load time — from the executable itself, not only from `ggml-cuda.dll` — and it
+is not shipped. With the toolkit off `PATH`, measured: exit `0xC0000135` before
+`main`. Adding `cublas64_13.dll` and `cublasLt64_13.dll` alone is sufficient and
+they cost 492 MB against a 79 MB installer. `cudart` is statically linked and is
+not a problem. Ship, static-link, or detect and tell the user — undecided; do
+not pick one unilaterally.
 
 ## Vendored whisper-rs patch
 
@@ -155,9 +188,10 @@ the setter.
 
 ## Measured behaviour, not assumed
 
-Findings from phase 3 on the dev machine (RTX 4080 SUPER, Ryzen 7 9850X3D,
-whisper.cpp 1.8.3, Ollama 0.32.4). Re-measure with `examples/rtf.rs` and
-`examples/vram.rs` rather than trusting these numbers after a dependency bump.
+Findings on the dev machine (RTX 4080 SUPER, Ryzen 7 9850X3D, whisper.cpp 1.8.3,
+llama.cpp via `llama-cpp-2`). Re-measure with `examples/rtf.rs`,
+`examples/vram.rs` and `examples/cleanup.rs` rather than trusting these numbers
+after a dependency bump.
 
 - **`no_speech_thold` does not work.** whisper.cpp derives the per-segment
   no-speech probability from the `<|nospeech|>` token after the first decode,
@@ -174,20 +208,42 @@ whisper.cpp 1.8.3, Ollama 0.32.4). Re-measure with `examples/rtf.rs` and
   build that works without a toolkit, not as a usable dictation path.
 - **Dropping a `WhisperContext` leaves ~222 MiB of video memory held.** It is
   ggml's per-device CUDA state, created on first use and freed only at process
-  exit. It is constant across load/unload cycles, so it is not a leak. Ollama,
-  by contrast, returns to the byte.
-- **Ollama's unload is asynchronous.** The HTTP call returns before the runner
-  process holding the memory has exited, so `/api/ps` must be polled; reading
-  `nvidia-smi` straight after the response reports the old figure.
-- **qwen3:14b costs 73 s to load from cold disk, 2.4 s from the page cache**,
-  and holds 9.5 GB. Idle eviction only drops it from video memory, so a
-  re-warm within a session pays the 2.4 s, not the 73 s.
+  exit. It is constant across load/unload cycles, so it is not a leak. Dropping
+  the llama.cpp model, by contrast, returns to the byte.
+- **`mmap` is off, deliberately.** It is llama.cpp's default and it is wrong
+  here: every byte of the file is destined for video memory, so mapping buys
+  nothing but a page fault per tensor, taken in tensor order rather than file
+  order. Measured with the file fully cached: 2784 ms with mmap against 1098 ms
+  for the explicit read. Do not "fix" `with_use_mmap(false)` back to the
+  default.
+- **Model load is bounded by sequential read throughput, and the spread is
+  fifty-fold.** The same 9 GB GGUF loads in 1.1 s from the NVMe and 56.4 s from
+  a 7200 rpm SATA disk (1288 MB/s against 162 MB/s). Neither figure is visible
+  to a user who has relocated the app data directory onto the big spare drive,
+  so `storage.rs` asks the device (`IOCTL_STORAGE_QUERY_PROPERTY`,
+  `StorageDeviceSeekPenaltyProperty`) and, when the descriptor comes back empty
+  — optional, and absent behind some RAID controllers, USB bridges and network
+  redirectors — judges the first real read instead. It warns; it never claims a
+  drive is fast.
+- **Qwen3-14B-Q4_K_M, official Hugging Face file**: 9,001,752,960 bytes,
+  sha256 `500a8806…`. Resident in 1191 ms warm, first token 311–336 ms, 878
+  prompt tokens, ~69.5 tok/s. The Ollama blob of the same quantisation gave
+  67.8 tok/s with identical tokenisation, so the producer does not matter.
 
 ## Agent conduct
 
 Never inject synthetic keyboard or mouse events into the live desktop
 session without asking first. Other applications are running and may be
 foreground. If a test requires real input, tell me and I will perform it.
+
+Never write to my real configuration or data files from a test harness. That
+means `%APPDATA%\com.steno.app\settings.json`, the history database, the model
+directory — anything the running app owns. Use a temp directory, or a copy, and
+point the code under test at it. This has already cost a live settings.json: a
+harness rewrote it to construct a pre-5.1 fixture, wrote a UTF-8 BOM by
+accident, and the app's next save overwrote the file with defaults. The bug it
+exposed was real and is fixed, but the fixture had no business being there.
+Reading a real file to copy it is fine; writing one is not.
 
 ## Product framing
 
@@ -212,9 +268,17 @@ Windows only for verification. Keep the code portable (no Windows-only APIs
 outside existing #[cfg] blocks) but do not attempt to validate macOS or Linux.
 Cross-platform is post-MVP.
 
-Default formatting model is qwen3:14b via Ollama. The model name and the
-system prompt both live in settings.json and are user-editable. Changing
-either must never require a rebuild.
+Default formatting model is `Qwen3-14B-Q4_K_M.gguf`, loaded in-process by
+llama.cpp. The model path and the system prompts both live in settings.json and
+are user-editable. Changing either must never require a rebuild.
+
+Two system prompts ship: `faithful` (the default — punctuation, paragraphs, no
+reorganisation) and `structured` (the phase-4 wording, which imposes headings
+and lists). `llm.prompt` selects by name from `llm.prompts`. A name absent from
+the map falls back to the compiled text of the same name, an unknown name falls
+back to `faithful` and says so once. `custom` is not a third mode: it is where
+the pre-5.1 settings migration deposits a system prompt it refuses to discard.
+Do not add a third mode without asking.
 
 ## VRAM discipline
 
@@ -224,14 +288,18 @@ preference. On Windows, oversubscribed VRAM spills to shared system memory
 and produces permanent stutter rather than a clean failure, so the symptom is
 misattributed to drivers.
 
-- Never use keep_alive: -1. The formatting model is unloaded when Steno hides
-  or quits.
+- The formatting model is dropped when Steno hides or quits. It lives in this
+  process, so this is an ordinary Rust lifetime — `Drop` on a struct field, not
+  a protocol. `LlamaBackend::init` stays for the life of the process (it is a
+  global one-shot); the model is what holds the nine gigabytes.
 - The WhisperContext is dropped on the same trigger. It is not kept resident
   for the lifetime of the process.
 - Both are warmed on window show, in the background, so the load cost is
   absorbed while the user is speaking rather than paid at the point of use.
-- Steno only kills an Ollama process it started itself. A pre-existing
-  instance on 11434 is used and left alone.
+- The llama.cpp context is built per request, not held beside the model: the KV
+  cache is the per-use cost, it takes 12–20 ms to build, and a context that
+  outlived a request would hold video memory through exactly the idle stretch
+  Steno promises to leave the card alone.
 - Acceptance: nvidia-smi reports the same used-memory figure before launch and
   after quit.
 
