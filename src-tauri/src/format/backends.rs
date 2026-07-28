@@ -41,6 +41,53 @@
 
 use std::path::{Path, PathBuf};
 
+/// Whether cuBLAS can be resolved, while there is still somewhere to say it.
+///
+/// `steno.exe` imports `cublas64_<major>.dll` directly, because whisper.cpp's
+/// ggml is linked statically into it. `build.rs` marks that import
+/// `/DELAYLOAD`, which moves the resolution from process start to the first
+/// call — the difference between dying at 0xC0000135 with no message and
+/// getting here at all.
+///
+/// The interception is this call, not the delay-load failure hook. Asking the
+/// loader a question is deterministic, testable, and happens at a moment of our
+/// choosing; the hook fires from inside a thunk on whatever thread first
+/// touched cuBLAS, and declining to continue from there means raising a
+/// structured exception through Rust frames. `LoadLibrary` here is the same
+/// question the thunk would ask, asked early.
+///
+/// The handle is deliberately leaked: the point is to answer the question, and
+/// on success the library is one the process is about to depend on anyway.
+#[cfg(all(windows, feature = "cuda"))]
+pub fn cublas_missing() -> Option<String> {
+    // Set by `build.rs` only when it actually emitted `/DELAYLOAD`. Absent, the
+    // import is load-time and this process would not be running to ask.
+    let Some(name) = option_env!("STENO_CUBLAS_DLL") else {
+        return None;
+    };
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn LoadLibraryA(name: *const u8) -> *mut std::ffi::c_void;
+    }
+
+    let zero_terminated = format!("{name}\0");
+    // SAFETY: the pointer is to a NUL-terminated buffer that outlives the call.
+    let handle = unsafe { LoadLibraryA(zero_terminated.as_ptr()) };
+
+    (handle.is_null()).then(|| {
+        format!(
+            "{name} could not be loaded. It is part of the NVIDIA CUDA runtime and Steno \
+             needs it to use the GPU. Without it transcription and formatting cannot run."
+        )
+    })
+}
+
+#[cfg(not(all(windows, feature = "cuda")))]
+pub fn cublas_missing() -> Option<String> {
+    None
+}
+
 /// The backend directory, and how it was found.
 pub struct Location {
     pub path: PathBuf,

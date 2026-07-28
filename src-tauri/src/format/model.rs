@@ -186,7 +186,12 @@ pub struct Availability {
 }
 
 pub fn availability(path: &Path) -> Availability {
-    let backend_problem = backends::diagnose(backends::locate().as_ref());
+    // cuBLAS first, because it outranks the backend modules: it is a delay-load
+    // import of the executable itself, so a missing one takes whisper down as
+    // well, and left unasked it would surface from inside the first cleanup
+    // instead of from the startup check.
+    let backend_problem =
+        backends::cublas_missing().or_else(|| backends::diagnose(backends::locate().as_ref()));
 
     Availability {
         reachable: backend_problem.is_none(),
