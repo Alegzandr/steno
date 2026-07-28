@@ -208,8 +208,13 @@ linked, reusing `model/download.rs`. Implemented in `gpu::runtime`; the panel is
   (51,870,320) and `LICENSE` (68,070) are inflated; `nvblas`, the headers and
   the import libraries are never touched. Deflate is the only method in the
   archive — read out of its central directory, not assumed. Transient peak 903
-  MB, which is what `storage::free_bytes` is checked against before starting;
-  the zip is deleted once the DLLs are in place, and kept if extraction fails so
+  MB, which is what `storage::free_bytes` is checked against before starting.
+  The downloaded 13.5.1 build is **indistinguishable from the toolkit's 13.3**:
+  three interleaved pairs on an idle card gave 1356 ms against 1393 ms for the
+  same clip and 57.8 against 59.7 tok/s for the same buffer, both inside the
+  spread of either arm. Do not re-measure this on a busy card — a run taken
+  during a game read 42 359 ms and 2.6 tok/s and says nothing about cuBLAS.
+  The zip is deleted once the DLLs are in place, and kept if extraction fails so
   a retry does not re-fetch 391 MB. Members are written under a `.part` name and
   renamed, `cublasLt` first and `cublas64` last, so the file the probe looks for
   never appears before the file it depends on.
