@@ -71,17 +71,33 @@ type Props = {
   onEscape?: () => void;
 };
 
-const theme = EditorView.theme({
-  "&": { height: "100%", fontSize: "13px" },
-  ".cm-scroller": {
-    fontFamily:
-      "ui-monospace, SFMono-Regular, 'Cascadia Mono', Consolas, monospace",
-    lineHeight: "1.55",
-    overflow: "auto",
+const theme = EditorView.theme(
+  {
+    "&": { height: "100%", fontSize: "13px" },
+    ".cm-scroller": {
+      fontFamily:
+        "ui-monospace, SFMono-Regular, 'Cascadia Mono', Consolas, monospace",
+      lineHeight: "1.55",
+      overflow: "auto",
+    },
+    ".cm-content": { padding: "10px 12px", caretColor: "transparent" },
+    "&.cm-focused": { outline: "none" },
+    // `drawSelection` blanks the native caret and draws this one instead. Its
+    // base-theme colour is black, which on this background is no caret at all:
+    // the click lands, nothing shows, and the user cannot tell where they are.
+    // Named explicitly rather than left to the dark flag, so a theme bump
+    // cannot take it away again.
+    ".cm-cursor, .cm-dropCursor": {
+      borderLeftColor: "var(--text)",
+      borderLeftWidth: "2px",
+    },
+    // Same reason: the drawn selection layer, not `::selection`.
+    "&.cm-focused .cm-selectionBackground, .cm-selectionBackground": {
+      background: "#33384a",
+    },
   },
-  ".cm-content": { padding: "10px 12px" },
-  "&.cm-focused": { outline: "none" },
-});
+  { dark: true },
+);
 
 export const Editor = forwardRef<EditorHandle, Props>(function Editor(
   { readOnly, onChange, onHistory, onCopyAndHide, onCleanUp, onEscape },
