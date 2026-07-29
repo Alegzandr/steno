@@ -11,6 +11,7 @@ pub mod filter;
 pub mod prompt;
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::Instant;
@@ -77,18 +78,69 @@ pub struct Failed {
     pub wav_path: String,
 }
 
+/// How many clips are inside Whisper right now.
+///
+/// Not derivable from anything else. The recorder is already idle by the time a
+/// clip is transcribed, and the residency says whether the model is loaded, not
+/// whether it is busy — it is warmed on window show with nothing to do. The tray
+/// is the only reader, and what it needs is a count rather than a flag: the retry
+/// command can queue a second clip while the first is still running.
+#[derive(Default)]
+pub struct InFlight(AtomicUsize);
+
+impl InFlight {
+    pub fn any(&self) -> bool {
+        self.0.load(Ordering::Acquire) > 0
+    }
+}
+
+/// Counts one clip as in flight for as long as it exists.
+///
+/// A guard rather than a pair of calls because `run` returns from a dozen places
+/// — every guard clause, every failure — and a decrement that is missed once
+/// leaves the tray claiming Steno is working forever.
+struct Busy<R: Runtime>(AppHandle<R>);
+
+impl<R: Runtime> Busy<R> {
+    fn enter(app: &AppHandle<R>) -> Self {
+        app.state::<Arc<InFlight>>().0.fetch_add(1, Ordering::AcqRel);
+        crate::tray::refresh(app);
+        Self(app.clone())
+    }
+}
+
+impl<R: Runtime> Drop for Busy<R> {
+    fn drop(&mut self) {
+        self.0
+            .state::<Arc<InFlight>>()
+            .0
+            .fetch_sub(1, Ordering::AcqRel);
+        crate::tray::refresh(&self.0);
+    }
+}
+
 /// Runs a clip through Whisper on its own thread and reports the result.
 ///
 /// Called from the audio session thread, which must return promptly to release
 /// the recorder, so this never blocks its caller.
 pub fn spawn<R: Runtime>(app: &AppHandle<R>, wav: PathBuf) {
+    // Taken here rather than inside the thread, on purpose: the recorder returns
+    // to Idle as soon as this call comes back, and a count raised a few
+    // milliseconds later would let the tray blink through Idle between the clip
+    // being written and Whisper starting on it.
+    let busy = Busy::enter(app);
     let app = app.clone();
 
     let spawned = thread::Builder::new()
         .name("steno-transcribe".to_owned())
-        .spawn(move || run(app, wav));
+        .spawn(move || {
+            let _busy = busy;
+            run(app, wav)
+        });
 
     if let Err(error) = spawned {
+        // `busy` moved into the closure, which `spawn` dropped on failure, so
+        // the count is already back down.
         eprintln!("transcribe: could not spawn the transcription thread ({error})");
     }
 }

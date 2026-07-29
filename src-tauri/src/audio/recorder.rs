@@ -105,6 +105,13 @@ impl Recorder {
         *slot = Slot::Recording(stop.clone());
         drop(slot);
 
+        // The red badge means "the shortcut was accepted", not "the microphone is
+        // live": the device takes tens of milliseconds to open, and a tray that
+        // waited for the first callback would look like it had missed the key.
+        // `recording-started` is the event that means live, and it is the level
+        // meter's business, not the tray's.
+        crate::tray::refresh(app);
+
         let inner = self.inner.clone();
         let handle = app.clone();
 
@@ -114,6 +121,7 @@ impl Recorder {
 
         if let Err(error) = spawned {
             self.inner.set(Slot::Idle);
+            crate::tray::refresh(app);
             emit_error(app, &format!("could not start the audio thread: {error}"));
         }
     }
@@ -184,12 +192,13 @@ pub fn rewarm<R: Runtime>(app: &AppHandle<R>, preferred: Option<String>) {
 
 /// Returns the recorder to `Idle` however the session thread ends, including
 /// on a panic. A stuck `Recording` would leave the shortcut dead for the rest
-/// of the session.
-struct ResetOnDrop(Arc<Inner>);
+/// of the session — and a badge stuck on red.
+struct ResetOnDrop<R: Runtime>(Arc<Inner>, AppHandle<R>);
 
-impl Drop for ResetOnDrop {
+impl<R: Runtime> Drop for ResetOnDrop<R> {
     fn drop(&mut self) {
         self.0.set(Slot::Idle);
+        crate::tray::refresh(&self.1);
     }
 }
 
@@ -199,7 +208,7 @@ fn run<R: Runtime>(
     stop: Sender<Stop>,
     stops: Receiver<Stop>,
 ) {
-    let _reset = ResetOnDrop(inner.clone());
+    let _reset = ResetOnDrop(inner.clone(), app.clone());
 
     // Read at capture time, not at start(): changing the device in the UI takes
     // effect on the next recording without restarting the app.
@@ -254,6 +263,7 @@ fn run<R: Runtime>(
     // Release the device before spending time on the file.
     drop(capture.stream);
     inner.set(Slot::Finalizing);
+    crate::tray::refresh(&app);
 
     let clipped = capture.clipped.load(Ordering::Relaxed);
     let raw = std::mem::take(&mut *lock(&capture.samples));

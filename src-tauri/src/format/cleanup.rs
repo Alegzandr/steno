@@ -142,16 +142,27 @@ pub fn spawn<R: Runtime>(app: AppHandle<R>, text: String) -> Result<(), String> 
     }
     cleanup.cancel.store(false, Ordering::Release);
 
+    // The badge follows `running`, at both ends. Set here rather than inside the
+    // thread so a cleanup that is waiting on a nine-gigabyte model load already
+    // shows as working.
+    let handle = app.clone();
+    crate::tray::refresh(&handle);
+
     let worker = cleanup.clone();
     let spawned = std::thread::Builder::new()
         .name("steno-cleanup".to_owned())
-        .spawn(move || {
-            run(&app, text, worker.clone());
-            worker.running.store(false, Ordering::Release);
+        .spawn({
+            let handle = handle.clone();
+            move || {
+                run(&app, text, worker.clone());
+                worker.running.store(false, Ordering::Release);
+                crate::tray::refresh(&handle);
+            }
         });
 
     if let Err(error) = spawned {
         cleanup.running.store(false, Ordering::Release);
+        crate::tray::refresh(&handle);
         return Err(format!("could not start the cleanup thread ({error})"));
     }
 

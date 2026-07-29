@@ -45,6 +45,11 @@ Do not substitute any of these without asking first.
 
 - Window: 400x600, frameless, always-on-top, no dock/taskbar icon, does not
   steal focus from the app the user was typing in.
+- **But it is never invisible.** A notification-area icon is present for the
+  life of the process, and it is the answer to "is Steno running" — its presence,
+  not a badge. That is not a contradiction of the line above: a taskbar *button*
+  puts Steno in the window list and in Alt+Tab, which is what `skipTaskbar`
+  exists to prevent; a tray icon does neither. See `src-tauri/src/tray.rs`.
 - Global shortcut is push-to-talk: hold to record, release to transcribe.
 - Raw transcript appears in the editor as soon as Whisper finishes. Never make
   the user wait for the LLM to see something. Formatting is not automatic — see
@@ -393,6 +398,10 @@ misattributed to drivers.
   cache is the per-use cost, it takes 12–20 ms to build, and a context that
   outlived a request would hold video memory through exactly the idle stretch
   Steno promises to leave the card alone.
+- The tray badge is amber whenever either resource is loaded, so "idle" and
+  "holding the card" are distinguishable without opening the window — and
+  quitting from the tray menu goes through `app.exit`, which is what makes the
+  release happen at all. A process killed from the Task Manager skips it.
 - Acceptance: nvidia-smi reports the same used-memory figure before launch and
   after quit.
 

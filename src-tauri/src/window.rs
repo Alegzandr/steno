@@ -1,6 +1,6 @@
 use tauri::{AppHandle, Manager, Runtime, WebviewWindow};
 
-use crate::lifecycle;
+use crate::{lifecycle, tray};
 
 pub const MAIN: &str = "main";
 
@@ -11,6 +11,11 @@ pub fn hide<R: Runtime>(app: &AppHandle<R>) {
     }
 
     lifecycle::on_hide(app);
+
+    // The tray menu offers Show or Hide depending on which one is possible, so
+    // it has to hear about this even though the residency change that follows
+    // will refresh it again a moment later.
+    tray::refresh(app);
 }
 
 /// Bring the mini editor on screen without taking the keyboard away from the
@@ -37,4 +42,5 @@ pub fn show_without_stealing_focus<R: Runtime>(window: &WebviewWindow<R>) {
     let _ = window.set_focusable(true);
 
     lifecycle::on_show(window.app_handle());
+    tray::refresh(window.app_handle());
 }

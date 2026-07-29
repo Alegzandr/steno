@@ -342,6 +342,11 @@ fn report_storage<R: Runtime>(app: &AppHandle<R>, loaded: &Loaded) {
     });
 }
 
+/// Tells the window what is resident, and the tray with it.
+///
+/// The single funnel for residency changes, which is why the tray is refreshed
+/// from here rather than from each of the four call sites: what the status bar
+/// shows and what the badge shows are then the same fact, reported once.
 fn emit<R: Runtime>(
     app: &AppHandle<R>,
     resource: &'static str,
@@ -356,4 +361,6 @@ fn emit<R: Runtime>(
             message,
         },
     );
+
+    crate::tray::report(app, resource, state);
 }

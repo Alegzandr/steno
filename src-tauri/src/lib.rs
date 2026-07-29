@@ -2,6 +2,7 @@ mod audio;
 mod commands;
 mod lifecycle;
 mod shortcut;
+mod tray;
 mod window;
 
 // Public so the measurement harness in `examples/` drives exactly the code the
@@ -72,6 +73,7 @@ pub fn run() {
             app.manage::<format::Formatter>(Arc::new(resident::Resident::new("llm")));
             app.manage(Arc::new(lifecycle::Activity::default()));
             app.manage(Arc::new(format::cleanup::Cleanup::default()));
+            app.manage(Arc::new(transcribe::InFlight::default()));
             app.manage(model::download::Downloads::default());
 
             // Probe the hardware and record the model choice now, not on first
@@ -107,6 +109,14 @@ pub fn run() {
             // still an obvious connection between the message and the install.
             if let Some(problem) = format::backends::diagnose(format::backends::locate().as_ref()) {
                 eprintln!("startup: {problem}");
+            }
+
+            // After the probe, because the badge reports a blocked GPU, and
+            // after everything it reads is managed. A tray that cannot be
+            // created is not fatal — but it does put Steno back to being
+            // invisible while hidden, so it is said out loud.
+            if let Err(error) = tray::build(app.handle()) {
+                eprintln!("tray: could not create the notification-area icon ({error})");
             }
 
             shortcut::register(app.handle())?;

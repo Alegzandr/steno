@@ -37,5 +37,12 @@ pub async fn install_cublas<R: Runtime>(
     app: AppHandle<R>,
     downloads: State<'_, Downloads>,
 ) -> Result<runtime::Status, String> {
-    runtime::install(app.clone(), downloads.inner()).await
+    let status = runtime::install(app.clone(), downloads.inner()).await;
+
+    // Whether it succeeded or not: `install` is the one thing that can change
+    // `gpu::blocker`, and the badge says so. A failure leaves it grey, which is
+    // still the right answer.
+    crate::tray::refresh(&app);
+
+    status
 }

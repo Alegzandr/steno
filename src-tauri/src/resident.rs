@@ -32,13 +32,28 @@ use serde::Serialize;
 use crate::audio::lock;
 
 /// What the UI shows next to a resource.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ResidentState {
+    /// Nothing loaded, no video memory held. Where every resource starts.
+    #[default]
     Cold,
     Loading,
     Ready,
     Failed,
+}
+
+impl ResidentState {
+    /// The same word the frontend receives, for the places that need a string
+    /// rather than a serialised value — the tray menu, and log lines.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ResidentState::Cold => "cold",
+            ResidentState::Loading => "loading",
+            ResidentState::Ready => "ready",
+            ResidentState::Failed => "failed",
+        }
+    }
 }
 
 enum Slot<T> {
